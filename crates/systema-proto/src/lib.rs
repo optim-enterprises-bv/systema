@@ -226,6 +226,27 @@ impl Signed<AgentCard> {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Direct agent-to-agent requests (`/systema/a2a/1.0.0`)
+// ---------------------------------------------------------------------------------------
+
+/// Protocol id for direct requests between nodes.
+pub const A2A_PROTOCOL: &str = "/systema/a2a/1.0.0";
+
+/// Largest text body a node will accept in one request.
+pub const MAX_REQUEST_TEXT: usize = 32 * 1024;
+
+/// Answer to a signed request. Only `Ok` carries model output, and it is signed by the responder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum A2aResponse {
+    Ok { reply: Signed<Message> },
+    /// Held in the responder's approvals inbox; retry after the operator approves.
+    Pending { inbox_id: String, reason: String },
+    Denied { reason: String },
+    Error { reason: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

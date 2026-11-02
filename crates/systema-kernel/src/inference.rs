@@ -46,7 +46,13 @@ impl InferenceClient {
 
     pub async fn chat(&self, tier: ModelTier, messages: &[ChatMessage]) -> anyhow::Result<String> {
         let url = format!("{}/chat/completions", self.cfg.endpoint.trim_end_matches('/'));
-        let body = json!({ "model": self.model_for(tier), "messages": messages, "stream": false });
+        let mut body = json!({ "model": self.model_for(tier), "messages": messages, "stream": false });
+        if let Some(t) = self.cfg.temperature {
+            body["temperature"] = json!(t);
+        }
+        if let Some(p) = self.cfg.top_p {
+            body["top_p"] = json!(p);
+        }
         let resp = self
             .http
             .post(&url)
@@ -61,6 +67,8 @@ impl InferenceClient {
             .into_iter()
             .next()
             .and_then(|c| c.message.content)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
             .context("empty completion")
     }
 

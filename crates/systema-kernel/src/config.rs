@@ -25,6 +25,9 @@ pub struct InferenceConfig {
     /// Concurrent sequences the engine can run. titan-engine is tuned for 2.
     pub max_concurrent: usize,
     pub timeout_secs: u64,
+    /// Sampling; unset = server default. Qwen3.x thinking models suggest 0.6 / 0.95.
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +57,8 @@ impl Default for InferenceConfig {
             deep_model: "default".into(),
             max_concurrent: 2,
             timeout_secs: 600,
+            temperature: Some(0.6),
+            top_p: Some(0.95),
         }
     }
 }
