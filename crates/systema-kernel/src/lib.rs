@@ -2,6 +2,7 @@
 //! every action they take on the host.
 
 pub mod approvals;
+pub mod board;
 pub mod bus;
 pub mod capability;
 pub mod config;
@@ -608,6 +609,20 @@ impl Kernel {
         }
         let result = match &req {
             ToolRequest::Mcp { server, tool, arguments } => self.call_mcp(server, tool, arguments).await,
+            // The board is shared state needing agent/session context, so it is handled here
+            // (like MCP) rather than in the per-agent workspace sandbox.
+            ToolRequest::BoardPost { topic, text } => board::post(
+                &self.config.home,
+                &m.name,
+                m.capabilities.public,
+                session.trust.untrusted,
+                topic,
+                text,
+            ),
+            ToolRequest::BoardRead { topic } => {
+                let posts = board::read(&self.config.home, topic.as_deref(), board::READ_LIMIT);
+                Ok(board::render(&posts))
+            }
             _ => tools::execute(&req, &checked, workspace).await,
         };
         match result {

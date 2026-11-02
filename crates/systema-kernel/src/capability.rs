@@ -57,6 +57,8 @@ const PRIVATE: TrustState = TrustState { untrusted: false, private: true, outbou
 const NONE: TrustState = TrustState { untrusted: false, private: false, outbound: false };
 const RUN: TrustState = TrustState { untrusted: false, private: true, outbound: true };
 const FETCH: TrustState = TrustState { untrusted: true, private: false, outbound: true };
+/// Reading untrusted shared content (e.g. a board with public/tainted posts): untrusted only.
+const UNTRUSTED: TrustState = TrustState { untrusted: true, private: false, outbound: false };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRequest {
@@ -73,6 +75,10 @@ pub enum ToolRequest {
     Fetch { url: String },
     /// The agent's own persistent key/value memory (stored in its workspace).
     Memory { action: String, key: String, value: String },
+    /// Post to the shared message board.
+    BoardPost { topic: String, text: String },
+    /// Read recent posts from the shared message board (optionally one topic).
+    BoardRead { topic: Option<String> },
     /// A `tools/call` on an operator-configured MCP server. `arguments` is the model's JSON.
     Mcp { server: String, tool: String, arguments: String },
 }
@@ -89,6 +95,8 @@ impl ToolRequest {
             ToolRequest::Shell { .. } => "shell",
             ToolRequest::Fetch { .. } => "fetch_url",
             ToolRequest::Memory { .. } => "memory",
+            ToolRequest::BoardPost { .. } => "board_post",
+            ToolRequest::BoardRead { .. } => "board_read",
             ToolRequest::Mcp { .. } => "mcp",
         }
     }
@@ -105,6 +113,11 @@ impl ToolRequest {
             ToolRequest::Shell { command } => format!("shell {}", command.replace('\n', " ")),
             ToolRequest::Fetch { url } => format!("fetch_url {url}"),
             ToolRequest::Memory { action, key, .. } => format!("memory {action} {key}").trim_end().to_string(),
+            ToolRequest::BoardPost { topic, .. } => format!("board_post [{topic}]"),
+            ToolRequest::BoardRead { topic } => match topic {
+                Some(t) => format!("board_read [{t}]"),
+                None => "board_read".into(),
+            },
             ToolRequest::Mcp { server, tool, arguments } => {
                 let a: String = arguments.chars().take(120).collect();
                 format!("mcp {server}.{tool} {a}")
@@ -130,6 +143,8 @@ pub enum Target {
     Mcp,
     /// The agent's own memory store, resolved inside its workspace at execute time.
     Memory,
+    /// The shared message board (handled in the kernel, not the per-agent sandbox).
+    Board,
     None,
 }
 
@@ -303,6 +318,26 @@ impl Broker {
                 // value back may reintroduce private data, so `get` carries the private leg.
                 let legs = if action == "get" { PRIVATE } else { NONE };
                 (GrantMode::Allow, legs, Target::Memory)
+            }
+            ToolRequest::BoardPost { .. } => {
+                if !caps.board {
+                    return Checked::deny("this agent has no board capability");
+                }
+                (GrantMode::Allow, NONE, Target::Board)
+            }
+            ToolRequest::BoardRead { topic } => {
+                if !caps.board {
+                    return Checked::deny("this agent has no board capability");
+                }
+                // The board is shared read/write state. It may hold the operator's own
+                // coordination (private), so a read is at least `private` — which means a
+                // swarm/remote session (already untrusted + outbound) that reads it completes
+                // the trifecta and is gated, blocking a leak. And if any returned post is from
+                // a public/swarm author or a tainted session, the read also brings in untrusted
+                // content, so the Rule of Two guards against an injected instruction.
+                let posts = crate::board::read(&self.systema_home, topic.as_deref(), crate::board::READ_LIMIT);
+                let legs = if crate::board::is_tainted(&posts) { PRIVATE.with(UNTRUSTED) } else { PRIVATE };
+                (GrantMode::Allow, legs, Target::Board)
             }
             ToolRequest::Run { program, args } => {
                 if program.contains('/') {
@@ -549,6 +584,7 @@ mod tests {
                     ExecGrant { program: "rm".into(), args_prefix: vec![], mode: GrantMode::Ask },
                 ],
                 mcp: vec!["web".into(), "unclassified".into()],
+                board: true,
                 public: true,
             },
         }
@@ -650,6 +686,29 @@ mod tests {
 
     fn mcp(server: &str, tool: &str) -> ToolRequest {
         ToolRequest::Mcp { server: server.into(), tool: tool.into(), arguments: "{}".into() }
+    }
+
+    #[test]
+    fn board_posts_are_untrusted_to_readers_and_gate_remote_leaks() {
+        let e = env();
+        let m = manifest(); // board = true, public = true
+        // Posting is allowed and adds no legs.
+        let post = ToolRequest::BoardPost { topic: "general".into(), text: "hi".into() };
+        let c = e.broker.check(&m, &TrustState::operator(), &post);
+        assert_eq!(c.decision, Decision::Allow);
+        assert_eq!(c.legs, TrustState::default());
+        // A read of an empty/operator board carries only the private leg.
+        let read = ToolRequest::BoardRead { topic: None };
+        let c = e.broker.check(&m, &TrustState::operator(), &read);
+        assert!(c.legs.private && !c.legs.untrusted);
+        // A remote (untrusted + outbound) session reading the board completes the trifecta
+        // → escalated, so a swarm agent cannot read the operator's board and reply out.
+        let c = e.broker.check(&m, &TrustState::remote(), &read);
+        assert!(matches!(c.decision, Decision::Ask { .. }));
+        // An agent without the board capability is denied.
+        let mut no_board = manifest();
+        no_board.capabilities.board = false;
+        assert!(matches!(e.broker.check(&no_board, &TrustState::operator(), &read).decision, Decision::Deny(_)));
     }
 
     #[test]

@@ -61,6 +61,8 @@ pub struct Capabilities {
     pub exec: Vec<ExecGrant>,
     /// MCP servers this agent may call.
     pub mcp: Vec<String>,
+    /// May read and post to the shared message board (`board_read`/`board_post`).
+    pub board: bool,
     /// Whether this agent's skills are advertised to the swarm.
     pub public: bool,
 }

@@ -55,6 +55,12 @@ Systema applies it in the kernel:
 - **Agent memory.** `memory` (set/get/list/delete) is each agent's own persistent key/value store, kept in its
   workspace (`memory.json`) and surviving restarts. `get` carries the *private* leg, since recalling a value can
   reintroduce private data into the context.
+- **Shared message board.** `board_post`/`board_read` let board-capable agents coordinate through one shared log
+  (`board.jsonl`). Because any agent — including a swarm-facing one, or one in a tainted session — can post, the
+  board is treated as untrusted-and-private input: a read carries the *private* leg (it may hold operator
+  coordination) and, when any returned post is from a public/tainted author, the *untrusted* leg too. So a
+  swarm/remote session that reads the board and would reply outward completes the trifecta and is gated — local
+  coordination works, a leak does not.
 - **Execution without a shell.** `run` executes one program with an argument vector (no shell), with a scrubbed
   environment (no credentials), cwd set to the workspace, a timeout and an output cap. Each manifest
   `exec` grant names a program and an argument prefix, with mode `allow` or `ask`. A trusted (non-public) agent
