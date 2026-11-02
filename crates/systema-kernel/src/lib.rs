@@ -6,6 +6,7 @@ pub mod capability;
 pub mod config;
 pub mod inference;
 pub mod manifest;
+pub mod mcp;
 pub mod scheduler;
 pub mod session;
 pub mod tools;
@@ -58,6 +59,7 @@ pub struct Kernel {
     pub scheduler: Scheduler,
     pub inference: InferenceClient,
     pub broker: Broker,
+    pub mcp: mcp::McpManager,
     agents: HashMap<String, AgentManifest>,
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
@@ -69,7 +71,8 @@ impl Kernel {
         Ok(Self {
             scheduler: Scheduler::new(config.inference.max_concurrent),
             inference: InferenceClient::new(config.inference.clone())?,
-            broker: Broker::new(&config.home, user_home),
+            broker: Broker::new(&config.home, user_home, config.mcp.clone()),
+            mcp: mcp::McpManager::default(),
             bus: Bus::default(),
             agents,
             sessions: Mutex::new(HashMap::new()),
@@ -134,7 +137,9 @@ impl Kernel {
         priority: Priority,
         approver: &dyn Approver,
     ) -> anyhow::Result<String> {
-        let tools = tools::schemas(m);
+        let (mcp_tools, mcp_names) = self.mcp_tools(m).await;
+        let mut tools = tools::schemas(m);
+        tools.extend(mcp_tools);
         let workspace = self.broker.workspace(&m.name);
         for _ in 0..MAX_TOOL_STEPS {
             let reply = {
@@ -147,7 +152,18 @@ impl Kernel {
                 return reply.content.context("empty answer");
             }
             for call in calls {
-                let result = self.broker_call(m, session, &workspace, &call.function.name, &call.function.arguments, approver).await;
+                let req = match mcp_names.get(&call.function.name) {
+                    Some((server, tool)) => Ok(ToolRequest::Mcp {
+                        server: server.clone(),
+                        tool: tool.clone(),
+                        arguments: call.function.arguments.clone(),
+                    }),
+                    None => tools::parse(&call.function.name, &call.function.arguments),
+                };
+                let result = match req {
+                    Ok(req) => self.broker_call(m, session, &workspace, req, approver).await,
+                    Err(e) => format!("error: {e:#}"),
+                };
                 session.push(ChatMessage::tool_result(&call.id, result));
             }
         }
@@ -160,14 +176,9 @@ impl Kernel {
         m: &AgentManifest,
         session: &mut Session,
         workspace: &std::path::Path,
-        name: &str,
-        arguments: &str,
+        req: ToolRequest,
         approver: &dyn Approver,
     ) -> String {
-        let req = match tools::parse(name, arguments) {
-            Ok(r) => r,
-            Err(e) => return format!("error: {e:#}"),
-        };
         let checked = self.broker.check(m, &session.trust, &req);
         let (run, outcome) = match &checked.decision {
             Decision::Allow => (true, "allowed".to_string()),
@@ -194,7 +205,11 @@ impl Kernel {
             }
             return format!("{outcome}. Do not retry the same request; explain to the user what you need instead.");
         }
-        match tools::execute(&req, &checked, workspace).await {
+        let result = match &req {
+            ToolRequest::Mcp { server, tool, arguments } => self.call_mcp(server, tool, arguments).await,
+            _ => tools::execute(&req, &checked, workspace).await,
+        };
+        match result {
             Ok(out) => {
                 session.trust = session.trust.with(checked.legs);
                 out
@@ -202,6 +217,48 @@ impl Kernel {
             Err(_) if opaque => "the operation failed.".into(),
             Err(e) => format!("error: {e:#}"),
         }
+    }
+
+    /// Schemas for the MCP tools this agent may use, plus a function-name → (server, tool) map.
+    /// Servers that fail to start are skipped (and logged) rather than failing the turn.
+    async fn mcp_tools(
+        &self,
+        m: &AgentManifest,
+    ) -> (Vec<serde_json::Value>, HashMap<String, (String, String)>) {
+        let mut schemas = Vec::new();
+        let mut names = HashMap::new();
+        for server in &m.capabilities.mcp {
+            let Some(cfg) = self.broker.mcp_server(server) else {
+                warn!(agent = %m.name, %server, "manifest names an mcp server that is not configured");
+                continue;
+            };
+            let client = match self.mcp.get(server, cfg, &self.broker.mcp_dir(server)).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(%server, "mcp server unavailable: {e:#}");
+                    continue;
+                }
+            };
+            for t in &client.tools {
+                let fname = mcp::function_name(server, &t.name);
+                let params = t.input_schema.clone().unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+                let desc = format!("[mcp:{server}] {}", t.description.as_deref().unwrap_or(""));
+                schemas.push(serde_json::json!({
+                    "type": "function",
+                    "function": { "name": fname, "description": desc, "parameters": params }
+                }));
+                names.insert(fname, (server.clone(), t.name.clone()));
+            }
+        }
+        (schemas, names)
+    }
+
+    async fn call_mcp(&self, server: &str, tool: &str, arguments: &str) -> anyhow::Result<String> {
+        let cfg = self.broker.mcp_server(server).context("mcp server not configured")?;
+        let args: serde_json::Value =
+            if arguments.trim().is_empty() { serde_json::json!({}) } else { serde_json::from_str(arguments).context("arguments are not JSON")? };
+        let client = self.mcp.get(server, cfg, &self.broker.mcp_dir(server)).await?;
+        client.call(tool, args).await
     }
 
     fn audit(&self, agent: &str, req: &ToolRequest, trust: &TrustState, outcome: &str) {

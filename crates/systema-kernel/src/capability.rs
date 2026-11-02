@@ -13,6 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{AgentManifest, GrantMode};
+use crate::mcp::McpServerConfig;
 
 /// Programs are only ever resolved from these directories, never from a path the model supplies.
 pub const SAFE_PATH: &[&str] = &["/usr/local/bin", "/usr/bin", "/bin", "/usr/local/sbin", "/usr/sbin", "/sbin"];
@@ -64,6 +65,8 @@ pub enum ToolRequest {
     WriteFile { path: String, content: String },
     Run { program: String, args: Vec<String> },
     Fetch { url: String },
+    /// A `tools/call` on an operator-configured MCP server. `arguments` is the model's JSON.
+    Mcp { server: String, tool: String, arguments: String },
 }
 
 impl ToolRequest {
@@ -74,6 +77,7 @@ impl ToolRequest {
             ToolRequest::WriteFile { .. } => "write_file",
             ToolRequest::Run { .. } => "run",
             ToolRequest::Fetch { .. } => "fetch_url",
+            ToolRequest::Mcp { .. } => "mcp",
         }
     }
 
@@ -85,6 +89,10 @@ impl ToolRequest {
             ToolRequest::WriteFile { path, content } => format!("write_file {path} ({} bytes)", content.len()),
             ToolRequest::Run { program, args } => format!("run {program} {}", args.join(" ")),
             ToolRequest::Fetch { url } => format!("fetch_url {url}"),
+            ToolRequest::Mcp { server, tool, arguments } => {
+                let a: String = arguments.chars().take(120).collect();
+                format!("mcp {server}.{tool} {a}")
+            }
         }
     }
 }
@@ -101,6 +109,7 @@ pub enum Target {
     Path(PathBuf),
     Program(PathBuf),
     Url(String),
+    Mcp,
     None,
 }
 
@@ -122,6 +131,7 @@ pub struct Broker {
     systema_home: PathBuf,
     user_home: PathBuf,
     protected: Vec<PathBuf>,
+    mcp: std::collections::BTreeMap<String, McpServerConfig>,
 }
 
 /// Paths under the user's home that hold credentials or session state.
@@ -137,13 +147,26 @@ const PROTECTED_SYSTEM: &[&str] =
     &["/proc", "/sys/firmware", "/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d", "/root", "/run/user"];
 
 impl Broker {
-    pub fn new(systema_home: impl Into<PathBuf>, user_home: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        systema_home: impl Into<PathBuf>,
+        user_home: impl Into<PathBuf>,
+        mcp: std::collections::BTreeMap<String, McpServerConfig>,
+    ) -> Self {
         let systema_home = canonical_or_normal(&systema_home.into());
         let user_home = canonical_or_normal(&user_home.into());
         let mut protected: Vec<PathBuf> = PROTECTED_IN_HOME.iter().map(|p| canonical_or_normal(&user_home.join(p))).collect();
         protected.extend(PROTECTED_SYSTEM.iter().map(|p| canonical_or_normal(Path::new(p))));
         protected.push(systema_home.clone());
-        Self { systema_home, user_home, protected }
+        Self { systema_home, user_home, protected, mcp }
+    }
+
+    pub fn mcp_server(&self, name: &str) -> Option<&McpServerConfig> {
+        self.mcp.get(name)
+    }
+
+    /// Working directory and HOME of an MCP server process.
+    pub fn mcp_dir(&self, server: &str) -> PathBuf {
+        self.systema_home.join("mcp").join(server)
     }
 
     pub fn workspace(&self, agent: &str) -> PathBuf {
@@ -264,6 +287,20 @@ impl Broker {
                     return Checked::deny(e);
                 }
                 (GrantMode::Allow, FETCH, Target::Url(url.clone()))
+            }
+            ToolRequest::Mcp { server, tool, .. } => {
+                if !caps.mcp.contains(server) {
+                    return Checked::deny(format!("this agent may not use mcp server `{server}`"));
+                }
+                let Some(cfg) = self.mcp.get(server) else {
+                    return Checked::deny(format!("mcp server `{server}` is not configured"));
+                };
+                if cfg.tools.as_ref().is_some_and(|allow| !allow.contains(tool)) {
+                    return Checked::deny(format!("tool `{tool}` is not enabled on mcp server `{server}`"));
+                }
+                let legs = TrustState { untrusted: cfg.untrusted, private: cfg.private, outbound: cfg.outbound };
+                let mode = if cfg.ask_tools.contains(tool) { GrantMode::Ask } else { cfg.mode };
+                (mode, legs, Target::Mcp)
             }
         };
 
@@ -413,7 +450,21 @@ mod tests {
         std::fs::write(home.join(".systema/identity.key"), "KEY").unwrap();
         std::fs::write(home.join("elsewhere/x"), "x").unwrap();
         std::os::unix::fs::symlink(home.join(".ssh/id_ed25519"), home.join("src/proj/innocent.txt")).unwrap();
-        let broker = Broker::new(home.join(".systema"), &home);
+        let mut mcp = std::collections::BTreeMap::new();
+        let server = |untrusted, private, outbound| McpServerConfig {
+            command: "true".into(),
+            args: vec![],
+            env: Default::default(),
+            tools: Some(vec!["search".into(), "delete".into()]),
+            ask_tools: vec!["delete".into()],
+            mode: GrantMode::Allow,
+            private,
+            outbound,
+            untrusted,
+        };
+        mcp.insert("web".into(), server(true, false, true));
+        mcp.insert("unclassified".into(), server(true, true, true));
+        let broker = Broker::new(home.join(".systema"), &home, mcp);
         Env { root, broker }
     }
 
@@ -435,7 +486,7 @@ mod tests {
                     ExecGrant { program: "git".into(), args_prefix: vec!["status".into()], mode: GrantMode::Allow },
                     ExecGrant { program: "rm".into(), args_prefix: vec![], mode: GrantMode::Ask },
                 ],
-                mcp: vec![],
+                mcp: vec!["web".into(), "unclassified".into()],
                 public: true,
             },
         }
@@ -533,5 +584,27 @@ mod tests {
         let tainted = TrustState { untrusted: true, private: false, outbound: false };
         let c = e.broker.check(&manifest(), &tainted, &ToolRequest::WriteFile { path: "~/src/proj/new.rs".into(), content: "x".into() });
         assert!(matches!(c.decision, Decision::Ask(_)));
+    }
+
+    fn mcp(server: &str, tool: &str) -> ToolRequest {
+        ToolRequest::Mcp { server: server.into(), tool: tool.into(), arguments: "{}".into() }
+    }
+
+    #[test]
+    fn mcp_calls_follow_manifest_allowlist_and_legs() {
+        let e = env();
+        let m = manifest();
+        let op = TrustState::operator();
+        let c = e.broker.check(&m, &op, &mcp("web", "search"));
+        assert_eq!(c.decision, Decision::Allow);
+        assert!(c.legs.untrusted && c.legs.outbound && !c.legs.private);
+        assert!(matches!(e.broker.check(&m, &op, &mcp("web", "delete")).decision, Decision::Ask(_)));
+        assert!(matches!(e.broker.check(&m, &op, &mcp("web", "exec")).decision, Decision::Deny(_)));
+        assert!(matches!(e.broker.check(&m, &op, &mcp("github", "search")).decision, Decision::Deny(_)));
+        // Unclassified servers default to all three legs: always the operator's call.
+        assert!(matches!(e.broker.check(&m, &op, &mcp("unclassified", "search")).decision, Decision::Ask(_)));
+        // A web search after reading private files would complete the trifecta.
+        let after_read = op.with(PRIVATE);
+        assert!(matches!(e.broker.check(&m, &after_read, &mcp("web", "search")).decision, Decision::Ask(_)));
     }
 }

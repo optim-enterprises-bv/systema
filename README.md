@@ -26,7 +26,23 @@ Scaffold, phase 1–2. Works today:
   therefore can't get your files back through an agent.
 - `systema status | agents | cards | id`. Every inbound and tool decision is logged to `~/.systema/audit.jsonl`.
 
-Not yet: MCP servers, microVM sandbox for public agents, memory, DHT skill lookup across the internet, task boards,
+- **MCP servers** (stdio) behind the same broker. Declare them in `~/.systema/systema.toml`, then add
+  `mcp = ["notes"]` to an agent's `[capabilities]`:
+
+  ```toml
+  [mcp.notes]
+  command = "python3"
+  args = ["-I", "/path/to/server.py"]
+  env = { NOTES_DIR = "/home/me/notes" }   # the only env vars the server sees
+  tools = ["add_note", "list_notes"]        # optional allowlist
+  ask_tools = []                           # tools that always need approval
+  # Trifecta legs a call adds (default all true = always ask):
+  untrusted = false
+  private = true
+  outbound = false
+  ```
+
+Not yet: microVM sandbox for public agents, memory, DHT skill lookup across the internet, task boards,
 HTTP A2A gateway, reputation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
 
 ## Quick start

@@ -11,6 +11,8 @@ pub struct Config {
     pub node: NodeConfig,
     /// Directory of agent manifests (`*.toml`). Relative paths resolve against SYSTEMA_HOME.
     pub agents_dir: PathBuf,
+    /// MCP servers the operator allows agents to use (`[mcp.<name>]`).
+    pub mcp: std::collections::BTreeMap<String, crate::mcp::McpServerConfig>,
     /// SYSTEMA_HOME this config was loaded from (not stored in the file).
     #[serde(skip)]
     pub home: PathBuf,
@@ -52,6 +54,7 @@ impl Default for Config {
             inference: InferenceConfig::default(),
             node: NodeConfig::default(),
             agents_dir: "agents".into(),
+            mcp: Default::default(),
             home: home_dir(),
         }
     }

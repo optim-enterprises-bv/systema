@@ -54,6 +54,13 @@ Systema applies it in the kernel:
 - **Fetch guards.** http(s) only; loopback, private, link-local and CGNAT addresses are refused, so a fetch can't
   reach titan-engine, the control socket's neighbours or your LAN.
 
+- **MCP servers behind the broker.** The operator configures servers in `systema.toml` and declares which
+  trifecta legs each touches (`untrusted`, `private`, `outbound`; **default: all three**, so an unclassified
+  server always needs approval). Agents opt in with `capabilities.mcp`; tools appear as
+  `mcp__<server>__<tool>`; every call gets the same allowlist / `ask_tools` / Rule of Two / audit treatment.
+  Servers run as the user with a scrubbed environment (only the variables you list): the broker governs which
+  calls are made, not what a server does internally, so install only servers you trust.
+
 This is session-level taint, a conservative approximation of **CaMeL** (Google DeepMind, *Defeating Prompt
 Injections by Design*): CaMeL tracks provenance per value through a planner/interpreter split (a hardened
 **dual-LLM pattern**), so it can allow more without risk. The planned step there is a quarantined reader whose
@@ -94,8 +101,8 @@ new session seeded with a summary, never an in-place rewrite.
 ## Roadmap
 
 1. ~~Kernel MVP: scheduler, sessions, bus, CLI~~ · ~~Node: identity, transports, mDNS, DHT, card gossip~~
-2. ~~Capability broker, tool-calling agent loop, per-session taint (Rule of Two)~~; MCP servers behind the broker;
-   libkrun microVMs for public agents; memory store; quarantined reader with opaque references (CaMeL-style).
+2. ~~Capability broker, tool-calling agent loop, per-session taint (Rule of Two), MCP servers behind the broker~~;
+   libkrun microVMs for public agents (and optionally MCP servers); persistent "always allow" approvals; memory store; quarantined reader with opaque references (CaMeL-style).
 3. ~~Direct agent↔agent requests over libp2p request-response, through the trust gate; approvals inbox (CLI)~~;
    TUI inbox with live notifications.
 4. `systema find <skill>`: DHT provider lookup; bootstrap node on a VPS; NAT test across real networks.
