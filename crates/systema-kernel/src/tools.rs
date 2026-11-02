@@ -19,6 +19,7 @@ pub const READ_CAP: u64 = 256 * 1024;
 pub const OUTPUT_CAP: usize = 64 * 1024;
 pub const LIST_CAP: usize = 500;
 pub const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+pub const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn function(name: &str, description: &str, params: Value) -> Value {
@@ -56,6 +57,15 @@ pub fn schemas(m: &AgentManifest) -> Vec<Value> {
             json!({ "type": "object", "properties": { "program": { "type": "string", "description": "Program name, e.g. git" }, "args": { "type": "array", "items": { "type": "string" } } }, "required": ["program"] }),
         ));
     }
+    if m.capabilities.shell && !m.capabilities.public {
+        v.push(function(
+            "shell",
+            "Run a shell command with bash (pipes, globs, redirects allowed), in your home directory, \
+             120 s timeout. This is the fastest way to do most tasks: inspect files, run tools, check the system. \
+             Prefer it for anything beyond a single simple file read.",
+            json!({ "type": "object", "properties": { "command": { "type": "string", "description": "A bash command line, e.g. `ls -la ~/restore | head`" } }, "required": ["command"] }),
+        ));
+    }
     if m.capabilities.network {
         v.push(function(
             "fetch_url",
@@ -82,6 +92,7 @@ pub fn parse(name: &str, arguments: &str) -> anyhow::Result<ToolRequest> {
                 _ => bail!("`args` must be an array of strings"),
             },
         },
+        "shell" => ToolRequest::Shell { command: s("command")? },
         "fetch_url" => ToolRequest::Fetch { url: s("url")? },
         other => bail!("unknown tool `{other}`"),
     })
@@ -158,6 +169,29 @@ pub async fn execute(req: &ToolRequest, checked: &Checked, workspace: &Path) -> 
             let out = tokio::time::timeout(RUN_TIMEOUT, child.wait_with_output())
                 .await
                 .map_err(|_| anyhow::anyhow!("timed out after {} s (killed)", RUN_TIMEOUT.as_secs()))??;
+            Ok(format!(
+                "exit status: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                out.status.code().map_or("signal".into(), |c| c.to_string()),
+                cap_text(&out.stdout),
+                cap_text(&out.stderr)
+            ))
+        }
+        (ToolRequest::Shell { .. }, Target::Shell(command)) => {
+            // A trusted operator shell: inherit the user's real environment and run from their
+            // home, like Hermes's `local` backend. Only non-public agents ever reach here.
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| workspace.to_path_buf());
+            let child = tokio::process::Command::new("/bin/bash")
+                .arg("-lc")
+                .arg(command)
+                .current_dir(&home)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()?;
+            let out = tokio::time::timeout(SHELL_TIMEOUT, child.wait_with_output())
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out after {} s (killed)", SHELL_TIMEOUT.as_secs()))??;
             Ok(format!(
                 "exit status: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
                 out.status.code().map_or("signal".into(), |c| c.to_string()),

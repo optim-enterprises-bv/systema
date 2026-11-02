@@ -65,13 +65,23 @@ pub struct Kernel {
 
 impl Kernel {
     pub fn new(config: Config) -> anyhow::Result<Self> {
-        let agents = manifest::load_dir(&config.agents_dir)?.into_iter().map(|m| (m.name.clone(), m)).collect();
+        let agents: HashMap<String, AgentManifest> =
+            manifest::load_dir(&config.agents_dir)?.into_iter().map(|m| (m.name.clone(), m)).collect();
         let user_home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
         let (events, _) = broadcast::channel(EVENT_CHANNEL);
+        let broker = Broker::new(&config.home, user_home, config.mcp.clone());
+        // Every agent always has a usable workspace, so in-workspace reads/lists/writes work
+        // from the first turn (otherwise `list_dir .` fails with "no such file or directory").
+        for name in agents.keys() {
+            let ws = broker.workspace(name);
+            if let Err(e) = std::fs::create_dir_all(&ws) {
+                warn!("could not create workspace {}: {e}", ws.display());
+            }
+        }
         Ok(Self {
             scheduler: Scheduler::new(config.inference.max_concurrent),
             inference: InferenceClient::new(config.inference.clone())?,
-            broker: Broker::new(&config.home, user_home, config.mcp.clone()),
+            broker,
             mcp: mcp::McpManager::default(),
             approvals: Arc::new(ApprovalStore::load(&config.home)),
             events,
@@ -126,6 +136,47 @@ impl Kernel {
     /// One turn with an agent in the operator's own session.
     pub async fn ask(&self, agent: &str, prompt: &str, approver: &dyn Approver) -> anyhow::Result<String> {
         self.ask_in(agent, agent, prompt, None, TrustState::operator(), approver, &CancellationToken::new()).await
+    }
+
+    /// Pick the agent best suited to a request (the orchestrator). Falls back to `operator`,
+    /// then the first agent, if the model's answer doesn't name a known agent.
+    pub async fn route(&self, prompt: &str) -> anyhow::Result<String> {
+        let agents: Vec<&AgentManifest> = self.agents().collect();
+        match agents.as_slice() {
+            [] => anyhow::bail!("no agents configured"),
+            [one] => return Ok(one.name.clone()),
+            _ => {}
+        }
+        let menu = agents
+            .iter()
+            .map(|m| {
+                let skills: Vec<_> = m.skills.iter().map(|s| s.id.as_str()).collect();
+                if skills.is_empty() {
+                    format!("- {}: {}", m.name, m.description)
+                } else {
+                    format!("- {}: {} [skills: {}]", m.name, m.description, skills.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let sys = format!(
+            "You are the request router for this machine. Choose the single best agent to handle the \
+             user's request. Available agents:\n{menu}\n\nReply with ONLY the exact agent name, nothing else."
+        );
+        let messages = vec![ChatMessage::text("system", sys), ChatMessage::text("user", prompt)];
+        let reply = {
+            let _slot = self.scheduler.acquire(Priority::Interactive).await;
+            self.inference.chat(ModelTier::Fast, &messages).await?
+        };
+        let pick = reply.trim().to_lowercase();
+        let chosen = agents
+            .iter()
+            .find(|m| pick == m.name.to_lowercase())
+            .or_else(|| agents.iter().find(|m| pick.contains(&m.name.to_lowercase())))
+            .map(|m| m.name.clone())
+            .or_else(|| self.agent("operator").map(|m| m.name.clone()))
+            .unwrap_or_else(|| agents[0].name.clone());
+        Ok(chosen)
     }
 
     /// One user turn in a named session: the agent may call tools through the broker
@@ -184,6 +235,11 @@ impl Kernel {
         let mut tools = tools::schemas(m);
         tools.extend(mcp_tools);
         let workspace = self.broker.workspace(&m.name);
+        // Guarantee the agent's workspace exists before any tool runs, so read_file/list_dir
+        // on it succeed from the first turn (write/run create it lazily, reads did not).
+        if let Err(e) = std::fs::create_dir_all(&workspace) {
+            warn!("could not create workspace {}: {e}", workspace.display());
+        }
         for _ in 0..MAX_TOOL_STEPS {
             if cancel.is_cancelled() {
                 anyhow::bail!("cancelled by operator");

@@ -31,6 +31,8 @@ enum Cmd {
     Cards,
     /// Send one prompt to a local agent through the kernel scheduler.
     Ask { agent: String, prompt: Vec<String> },
+    /// Ask the OS: the orchestrator routes your request to the best agent and runs it.
+    Do { prompt: Vec<String> },
     /// Run the swarm node (discovery, card announcements, inbound requests) until ctrl-c.
     Node,
     /// List agents discovered on other nodes (needs a running node).
@@ -94,6 +96,7 @@ enum Cmd {
 }
 
 const EXAMPLE_AGENTS: &[(&str, &str)] = &[
+    ("operator.toml", include_str!("../../../agents/operator.toml")),
     ("coder.toml", include_str!("../../../agents/coder.toml")),
     ("sysadmin.toml", include_str!("../../../agents/sysadmin.toml")),
     ("researcher.toml", include_str!("../../../agents/researcher.toml")),
@@ -183,6 +186,13 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Ask { agent, prompt } => {
             let k = Kernel::new(Config::load(&home)?)?;
             println!("{}", k.ask(&agent, &prompt.join(" "), &TerminalApprover).await?);
+        }
+        Cmd::Do { prompt } => {
+            let k = Kernel::new(Config::load(&home)?)?;
+            let prompt = prompt.join(" ");
+            let agent = k.route(&prompt).await?;
+            eprintln!("[routed to {agent}]");
+            println!("{}", k.ask(&agent, &prompt, &TerminalApprover).await?);
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;

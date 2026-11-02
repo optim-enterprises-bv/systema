@@ -64,6 +64,8 @@ pub enum ToolRequest {
     ListDir { path: String },
     WriteFile { path: String, content: String },
     Run { program: String, args: Vec<String> },
+    /// A full shell command (`bash -lc`), for trusted local agents only. Real operator shell.
+    Shell { command: String },
     Fetch { url: String },
     /// A `tools/call` on an operator-configured MCP server. `arguments` is the model's JSON.
     Mcp { server: String, tool: String, arguments: String },
@@ -76,6 +78,7 @@ impl ToolRequest {
             ToolRequest::ListDir { .. } => "list_dir",
             ToolRequest::WriteFile { .. } => "write_file",
             ToolRequest::Run { .. } => "run",
+            ToolRequest::Shell { .. } => "shell",
             ToolRequest::Fetch { .. } => "fetch_url",
             ToolRequest::Mcp { .. } => "mcp",
         }
@@ -88,6 +91,7 @@ impl ToolRequest {
             ToolRequest::ListDir { path } => format!("list_dir {path}"),
             ToolRequest::WriteFile { path, content } => format!("write_file {path} ({} bytes)", content.len()),
             ToolRequest::Run { program, args } => format!("run {program} {}", args.join(" ")),
+            ToolRequest::Shell { command } => format!("shell {}", command.replace('\n', " ")),
             ToolRequest::Fetch { url } => format!("fetch_url {url}"),
             ToolRequest::Mcp { server, tool, arguments } => {
                 let a: String = arguments.chars().take(120).collect();
@@ -110,6 +114,7 @@ pub enum Target {
     Path(PathBuf),
     Program(PathBuf),
     Url(String),
+    Shell(String),
     Mcp,
     None,
 }
@@ -279,6 +284,18 @@ impl Broker {
                     }
                 };
                 (mode, RUN, Target::Program(resolved))
+            }
+            ToolRequest::Shell { command } => {
+                if !caps.shell {
+                    return Checked::deny("this agent has no shell capability");
+                }
+                // A real shell can read anything the user can (including credential stores),
+                // so it is never handed to a swarm-facing agent. Until public agents run in a
+                // microVM, shell is operator-only.
+                if caps.public {
+                    return Checked::deny("shell is not available to swarm-facing (public) agents");
+                }
+                (GrantMode::Allow, RUN, Target::Shell(command.clone()))
             }
             ToolRequest::Fetch { url } => {
                 if !caps.network {
