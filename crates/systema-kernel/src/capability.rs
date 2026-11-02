@@ -79,6 +79,10 @@ pub enum ToolRequest {
     BoardPost { topic: String, text: String },
     /// Read recent posts from the shared message board (optionally one topic).
     BoardRead { topic: Option<String> },
+    /// Hand a sub-task to another agent and wait for its result.
+    DelegateTask { agent: String, task: String },
+    /// Read the task board (recent delegated tasks and their status).
+    TaskList,
     /// A `tools/call` on an operator-configured MCP server. `arguments` is the model's JSON.
     Mcp { server: String, tool: String, arguments: String },
 }
@@ -97,6 +101,8 @@ impl ToolRequest {
             ToolRequest::Memory { .. } => "memory",
             ToolRequest::BoardPost { .. } => "board_post",
             ToolRequest::BoardRead { .. } => "board_read",
+            ToolRequest::DelegateTask { .. } => "delegate_task",
+            ToolRequest::TaskList => "task_list",
             ToolRequest::Mcp { .. } => "mcp",
         }
     }
@@ -118,6 +124,8 @@ impl ToolRequest {
                 Some(t) => format!("board_read [{t}]"),
                 None => "board_read".into(),
             },
+            ToolRequest::DelegateTask { agent, task } => format!("delegate_task → {agent}: {}", task.chars().take(80).collect::<String>()),
+            ToolRequest::TaskList => "task_list".into(),
             ToolRequest::Mcp { server, tool, arguments } => {
                 let a: String = arguments.chars().take(120).collect();
                 format!("mcp {server}.{tool} {a}")
@@ -145,6 +153,8 @@ pub enum Target {
     Memory,
     /// The shared message board (handled in the kernel, not the per-agent sandbox).
     Board,
+    /// A delegated sub-task or the task board (handled in the kernel).
+    Delegate,
     None,
 }
 
@@ -338,6 +348,26 @@ impl Broker {
                 let posts = crate::board::read(&self.systema_home, topic.as_deref(), crate::board::READ_LIMIT);
                 let legs = if crate::board::is_tainted(&posts) { PRIVATE.with(UNTRUSTED) } else { PRIVATE };
                 (GrantMode::Allow, legs, Target::Board)
+            }
+            ToolRequest::DelegateTask { .. } => {
+                if !caps.delegate {
+                    return Checked::deny("this agent has no delegate capability");
+                }
+                // Delegating from an untrusted session is the escalation vector (a remote peer
+                // causing a more-capable agent to run), so it is refused. Only a clean,
+                // operator-driven session may delegate. The sub-task's final taint is merged
+                // back into this session by the kernel after it runs.
+                if trust.untrusted {
+                    return Checked::deny("cannot delegate from a session holding untrusted content");
+                }
+                (GrantMode::Allow, NONE, Target::Delegate)
+            }
+            ToolRequest::TaskList => {
+                if !caps.delegate {
+                    return Checked::deny("this agent has no delegate capability");
+                }
+                // Task results may contain private data pulled by the assignee.
+                (GrantMode::Allow, PRIVATE, Target::Delegate)
             }
             ToolRequest::Run { program, args } => {
                 if program.contains('/') {
@@ -585,6 +615,7 @@ mod tests {
                 ],
                 mcp: vec!["web".into(), "unclassified".into()],
                 board: true,
+                delegate: false,
                 public: true,
             },
         }
@@ -686,6 +717,20 @@ mod tests {
 
     fn mcp(server: &str, tool: &str) -> ToolRequest {
         ToolRequest::Mcp { server: server.into(), tool: tool.into(), arguments: "{}".into() }
+    }
+
+    #[test]
+    fn delegation_needs_capability_and_a_clean_session() {
+        let e = env();
+        let mut m = manifest();
+        let del = ToolRequest::DelegateTask { agent: "sysadmin".into(), task: "check disks".into() };
+        // Without the capability: denied.
+        assert!(matches!(e.broker.check(&m, &TrustState::operator(), &del).decision, Decision::Deny(_)));
+        // With it, from a clean session: allowed.
+        m.capabilities.delegate = true;
+        assert_eq!(e.broker.check(&m, &TrustState::operator(), &del).decision, Decision::Allow);
+        // But never from an untrusted session (that would be a privilege-escalation path).
+        assert!(matches!(e.broker.check(&m, &TrustState::remote(), &del).decision, Decision::Deny(_)));
     }
 
     #[test]

@@ -14,6 +14,7 @@ Scaffold, phase 1–2. Works today:
 - `systema ask <agent> <prompt>`: one turn through the kernel: append-only session → priority GPU scheduler → titan-engine.
 - `systema do <prompt>`: ask the OS — the orchestrator routes to the best agent (falling back to `operator`).
 - `systema propose`: review the audit log and draft improvement proposals to `~/.systema/proposals/` (applied by hand, never automatically).
+- `systema tasks`: show the task board — sub-tasks agents delegated to each other (via `delegate_task`) and their status.
 - `systema node`: libp2p node (QUIC+TCP, relay client + DCUtR, mDNS, Kademlia, GossipSub) that announces
   signed agent cards and records verified cards from peers.
 - **Agent ↔ agent requests across nodes** (`/systema/a2a/1.0.0`): `systema send <peer> <agent> --skill <id> <text>`.

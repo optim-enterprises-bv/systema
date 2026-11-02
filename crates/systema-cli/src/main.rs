@@ -35,6 +35,8 @@ enum Cmd {
     Do { prompt: Vec<String> },
     /// Review the audit log and draft improvement proposals for you to apply (nothing is changed).
     Propose,
+    /// Show the task board: recent tasks agents delegated to each other, with status.
+    Tasks,
     /// Run the swarm node (discovery, card announcements, inbound requests) until ctrl-c.
     Node,
     /// List agents discovered on other nodes (needs a running node).
@@ -210,6 +212,10 @@ async fn main() -> anyhow::Result<()> {
             let path = k.propose_improvements(&TerminalApprover).await?;
             let doc = std::fs::read_to_string(&path)?;
             println!("{doc}\n[saved to {}]", path.display());
+        }
+        Cmd::Tasks => {
+            let tasks = systema_kernel::tasks::list(&home, 50);
+            println!("{}", systema_kernel::tasks::render(&tasks));
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;

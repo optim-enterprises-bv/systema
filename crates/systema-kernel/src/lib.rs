@@ -12,6 +12,7 @@ pub mod manifest;
 pub mod mcp;
 pub mod scheduler;
 pub mod session;
+pub mod tasks;
 pub mod tools;
 
 use std::collections::HashMap;
@@ -43,6 +44,8 @@ pub const EVENT_CHANNEL: usize = 1024;
 pub const SESSION_TOKEN_BUDGET: usize = 24_000;
 /// Model round-trips per user turn before the kernel stops the loop.
 pub const MAX_TOOL_STEPS: usize = 12;
+/// How deep `delegate_task` chains may nest before refusing (A→B→C→…).
+pub const MAX_DELEGATION_DEPTH: u32 = 3;
 
 const QUARANTINE_PROMPT: &str = "You are the quarantine responder of a Systema node. You have no tools, no memory \
 and no access to the operator or other agents. A peer that has not been approved sent the message below. Reply in \
@@ -63,6 +66,8 @@ pub struct Kernel {
     /// Set true for a session when the current turn hit a manifest-ceiling denial (the agent
     /// lacks a capability operator has), so an orchestrated turn can hand off to operator.
     turn_walls: Mutex<HashMap<String, bool>>,
+    /// Delegation nesting depth per session key, so `delegate_task` chains can't recurse forever.
+    delegation_depth: Mutex<HashMap<String, u32>>,
     agents: HashMap<String, AgentManifest>,
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
@@ -91,6 +96,7 @@ impl Kernel {
             events,
             steer: Mutex::new(HashMap::new()),
             turn_walls: Mutex::new(HashMap::new()),
+            delegation_depth: Mutex::new(HashMap::new()),
             bus: Bus::default(),
             agents,
             sessions: Mutex::new(HashMap::new()),
@@ -531,7 +537,7 @@ impl Kernel {
                 let result = match req {
                     Ok(req) => {
                         self.emit(Some(&m.name), Some(session_key), EventKind::ToolCall { request: req.summary() });
-                        self.broker_call(m, session_key, session, &workspace, req, approver).await
+                        self.broker_call(m, session_key, session, &workspace, req, approver, cancel).await
                     }
                     Err(e) => format!("error: {e:#}"),
                 };
@@ -543,6 +549,7 @@ impl Kernel {
 
     /// Check → (ask / remembered) → execute → update taint → audit. Returns the model-facing text.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn broker_call(
         &self,
         m: &AgentManifest,
@@ -551,6 +558,7 @@ impl Kernel {
         workspace: &std::path::Path,
         req: ToolRequest,
         approver: &dyn Approver,
+        cancel: &CancellationToken,
     ) -> String {
         let checked = self.broker.check(m, &session.trust, &req);
         let (run, outcome) = match &checked.decision {
@@ -607,6 +615,9 @@ impl Kernel {
             }
             return format!("{outcome}. Do not retry the same request; explain to the user what you need instead.");
         }
+        // A delegated sub-task reports the taint it actually accumulated, which we merge into
+        // this session instead of the static `checked.legs`.
+        let mut delegated_trust: Option<TrustState> = None;
         let result = match &req {
             ToolRequest::Mcp { server, tool, arguments } => self.call_mcp(server, tool, arguments).await,
             // The board is shared state needing agent/session context, so it is handled here
@@ -623,15 +634,81 @@ impl Kernel {
                 let posts = board::read(&self.config.home, topic.as_deref(), board::READ_LIMIT);
                 Ok(board::render(&posts))
             }
+            ToolRequest::DelegateTask { agent, task } => {
+                match self.run_delegate(session_key, session.trust, &m.name, agent, task, approver, cancel).await {
+                    Ok((text, child_trust)) => {
+                        delegated_trust = Some(child_trust);
+                        Ok(text)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            ToolRequest::TaskList => Ok(tasks::render(&tasks::list(&self.config.home, 50))),
             _ => tools::execute(&req, &checked, workspace).await,
         };
         match result {
             Ok(out) => {
-                session.trust = session.trust.with(checked.legs);
+                session.trust = session.trust.with(delegated_trust.unwrap_or(checked.legs));
                 out
             }
             Err(_) if opaque => "the operation failed.".into(),
             Err(e) => format!("error: {e:#}"),
+        }
+    }
+
+    /// Run a delegated sub-task: record it on the task board, run a full turn for `assignee`
+    /// (carrying the caller's trust forward so taint never clears), write the outcome back, and
+    /// return the assignee's answer plus the taint its session ended with. Depth-limited and
+    /// non-self so a chain can't recurse or loop.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_delegate(
+        &self,
+        caller_session: &str,
+        caller_trust: TrustState,
+        creator: &str,
+        assignee: &str,
+        task: &str,
+        approver: &dyn Approver,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<(String, TrustState)> {
+        if assignee == creator {
+            anyhow::bail!("an agent cannot delegate to itself");
+        }
+        if self.agent(assignee).is_none() {
+            anyhow::bail!("no agent named {assignee} to delegate to");
+        }
+        let depth = self.delegation_depth.lock().await.get(caller_session).copied().unwrap_or(0);
+        if depth >= MAX_DELEGATION_DEPTH {
+            anyhow::bail!("delegation is nested too deep (limit {MAX_DELEGATION_DEPTH}); do this step yourself");
+        }
+        let id = tasks::create(&self.config.home, creator, assignee, task)?;
+        let child_key = format!("task:{id}");
+        self.delegation_depth.lock().await.insert(child_key.clone(), depth + 1);
+        self.emit(Some(assignee), Some(&child_key), EventKind::Note { text: format!("delegated by {creator}: {}", task.chars().take(80).collect::<String>()) });
+
+        // Box the recursive call: delegate_task runs a full turn, which may itself delegate.
+        let outcome = Box::pin(self.ask_in(assignee, &child_key, task, Some(Priority::Background), caller_trust, approver, cancel)).await;
+
+        // The assignee's session ended holding some taint; carry it back to the caller.
+        let child_trust = {
+            let s = self.sessions.lock().await;
+            match s.get(&child_key) {
+                Some(sess) => sess.lock().await.trust,
+                None => caller_trust,
+            }
+        };
+        self.delegation_depth.lock().await.remove(&child_key);
+
+        match outcome {
+            Ok(answer) => {
+                tasks::finish(&self.config.home, &id, true, &answer);
+                Ok((format!("[{assignee} completed the task]\n{answer}"), child_trust))
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                tasks::finish(&self.config.home, &id, false, &msg);
+                Ok((format!("[{assignee} could not complete the task: {msg}]"), child_trust))
+            }
         }
     }
 

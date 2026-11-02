@@ -55,6 +55,13 @@ Systema applies it in the kernel:
 - **Agent memory.** `memory` (set/get/list/delete) is each agent's own persistent key/value store, kept in its
   workspace (`memory.json`) and surviving restarts. `get` carries the *private* leg, since recalling a value can
   reintroduce private data into the context.
+- **Delegation + task board.** `delegate_task` hands a self-contained sub-task to another agent (`delegate`
+  capability required); the kernel runs a full turn for the assignee and returns its result to the caller.
+  Every delegation is recorded on a durable task board (`tasks.jsonl`; `task_list` / `systema tasks`), moving
+  running → done/failed. Safety: the sub-task inherits the caller's trust (taint never clears) and its final
+  taint merges back into the caller, delegation is **refused from an untrusted session** (so a remote peer can't
+  escalate by causing a privileged agent to run), chains are depth-limited (3) and an agent can't delegate to
+  itself.
 - **Shared message board.** `board_post`/`board_read` let board-capable agents coordinate through one shared log
   (`board.jsonl`). Because any agent — including a swarm-facing one, or one in a tainted session — can post, the
   board is treated as untrusted-and-private input: a read carries the *private* leg (it may hold operator

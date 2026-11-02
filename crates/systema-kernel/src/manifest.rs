@@ -63,6 +63,8 @@ pub struct Capabilities {
     pub mcp: Vec<String>,
     /// May read and post to the shared message board (`board_read`/`board_post`).
     pub board: bool,
+    /// May hand sub-tasks to other agents (`delegate_task`) and read the task board.
+    pub delegate: bool,
     /// Whether this agent's skills are advertised to the swarm.
     pub public: bool,
 }
