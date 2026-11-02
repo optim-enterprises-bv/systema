@@ -24,6 +24,8 @@ Scaffold, phase 1–2. Works today:
 - **Relays for nodes behind NAT.** A public node can act as bootstrap + circuit relay; a node behind NAT reserves a
   slot on it and is advertised (DHT records and cards) at its `…/p2p-circuit/p2p/<id>` address, so others can reach
   it without port forwarding (`scripts/e2e-relay.sh`). Reservations are kept alive and re-requested if they lapse.
+  DCUtR then upgrades the relayed link to a **direct** connection where the NATs allow it; validate that across two
+  real NATs + a public relay with `scripts/holepunch-cross-nat.sh` (runbook: `docs/CROSS-NAT.md`).
 - `systema peers | inbox | approve | reject | block | grants`: drive the running node over a private Unix socket.
 
 ### Running a public bootstrap + relay (e.g. a small VPS)
@@ -73,8 +75,8 @@ On nodes behind NAT: `bootstrap = ["/ip4/<public-ip>/tcp/4001/p2p/<relay-id>"]`,
   outbound = false
   ```
 
-Not yet: microVM sandbox for public agents, memory, a real cross-NAT test via a public bootstrap/relay, task boards,
-HTTP A2A gateway, reputation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
+Not yet: microVM sandbox for public agents, task boards, HTTP A2A gateway, reputation.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
 
 ## Install
 
