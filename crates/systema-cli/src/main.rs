@@ -89,6 +89,8 @@ enum Cmd {
     Rules,
     /// Stream live kernel events (ctrl-c to stop).
     Watch,
+    /// Launch the cockpit UI (monitor, steer and approve agents).
+    Tui,
 }
 
 const EXAMPLE_AGENTS: &[(&str, &str)] = &[
@@ -268,6 +270,15 @@ async fn main() -> anyhow::Result<()> {
             while let Some(line) = lines.next_line().await? {
                 println!("{line}");
             }
+        }
+        Cmd::Tui => {
+            use std::os::unix::process::CommandExt as _;
+            // The cockpit is a sibling binary; run it with our resolved home.
+            let exe = std::env::current_exe()?;
+            let tui = exe.with_file_name("systema-tui");
+            let bin = if tui.exists() { tui } else { PathBuf::from("systema-tui") };
+            let err = std::process::Command::new(&bin).arg(&home).exec();
+            anyhow::bail!("could not launch {}: {err}", bin.display());
         }
     }
     Ok(())

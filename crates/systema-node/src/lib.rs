@@ -118,8 +118,18 @@ pub struct InboxItem {
 
 type Finished = (ResponseChannel<A2aResponse>, A2aResponse);
 
-/// Shared registry of tool approvals awaiting an operator answer, keyed by approval id.
-type PendingApprovals = Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<Answer>>>>;
+/// A tool approval awaiting an operator answer: the answer channel plus the details the UI
+/// needs to render it (so a UI that connects mid-wait can still show and answer it).
+struct PendingApproval {
+    tx: std::sync::mpsc::Sender<Answer>,
+    agent: String,
+    request: String,
+    reason: String,
+    rememberable: bool,
+}
+
+/// Shared registry of pending tool approvals, keyed by approval id.
+type PendingApprovals = Arc<std::sync::Mutex<HashMap<String, PendingApproval>>>;
 
 /// [`Approver`] for the daemon: emits an `ApprovalNeeded` event and blocks (on a dedicated
 /// worker thread, via the kernel's `block_in_place`) until the operator answers via the
@@ -136,7 +146,10 @@ impl Approver for DaemonApprover {
     fn approve(&self, agent: &str, request: &ToolRequest, reason: &str, rememberable: bool) -> Answer {
         let id = random_id()[..8].to_string();
         let (tx, rx) = std::sync::mpsc::channel();
-        self.pending.lock().unwrap().insert(id.clone(), tx);
+        self.pending.lock().unwrap().insert(
+            id.clone(),
+            PendingApproval { tx, agent: agent.to_string(), request: request.summary(), reason: reason.to_string(), rememberable },
+        );
         let _ = self.events.send(Event {
             ts: now_ms(),
             agent: Some(agent.to_string()),
@@ -779,7 +792,7 @@ impl Node {
             })),
             Control::Resolve { id, answer, remember } => {
                 let answer = if remember && matches!(answer, Answer::Once) { Answer::Always } else { answer };
-                match self.pending_approvals.lock().unwrap().get(&id).cloned() {
+                match self.pending_approvals.lock().unwrap().get(&id).map(|p| p.tx.clone()) {
                     Some(tx) => {
                         let _ = tx.send(answer);
                         Ok(json!({ "resolved": id }))
@@ -787,9 +800,20 @@ impl Node {
                     None => Err(format!("no pending approval {id} (it may have timed out)")),
                 }
             }
-            Control::Approvals => Ok(json!({
-                "pending": self.pending_approvals.lock().unwrap().keys().cloned().collect::<Vec<_>>(),
-            })),
+            Control::Approvals => Ok(json!(
+                self.pending_approvals
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, p)| json!({
+                        "id": id,
+                        "agent": p.agent,
+                        "request": p.request,
+                        "reason": p.reason,
+                        "rememberable": p.rememberable,
+                    }))
+                    .collect::<Vec<_>>()
+            )),
             Control::Rules => Ok(json!(self.kernel.approvals.rules())),
             Control::Forget { agent, key } => {
                 if self.kernel.approvals.forget(&agent, &key) {
@@ -808,6 +832,23 @@ impl Node {
                     "skills": m.skills.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>()
             )),
+            Control::Status => {
+                let addrs = self.listen_addrs();
+                let reservations = self.relays.iter().filter(|r| r.listener.is_some()).count();
+                Ok(json!({
+                    "peer_id": self.peer_id().to_string(),
+                    "listen": addrs,
+                    "running": self.running.keys().cloned().collect::<Vec<_>>(),
+                    "peers": self.discovered.len(),
+                    "agents": self.kernel.agents().count(),
+                    "inbox": self.inbox.len(),
+                    "grants": self.trust.policy().grants.len(),
+                    "blocked": self.trust.policy().blocked.len(),
+                    "relay_server": self.cfg.relay_server,
+                    "relay_reservations": reservations,
+                    "pending_approvals": self.pending_approvals.lock().unwrap().len(),
+                }))
+            }
             // Streamed by the socket handler, never dispatched here.
             Control::Watch => Err("watch is a streaming command".into()),
         };

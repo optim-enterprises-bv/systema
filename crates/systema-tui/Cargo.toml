@@ -1,0 +1,22 @@
+[package]
+name = "systema-tui"
+description = "Systema cockpit: a terminal UI to monitor, steer and approve agents."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "systema-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+systema-kernel.workspace = true
+systema-node.workspace = true
+

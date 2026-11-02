@@ -49,7 +49,13 @@ On nodes behind NAT: `bootstrap = ["/ip4/<public-ip>/tcp/4001/p2p/<relay-id>"]`,
 - **Rule of Two.** Sessions track untrusted content / private data / outbound channel; a call that would complete
   the lethal trifecta needs your approval (`y/N` in `systema ask`, refused on the node). An approved remote peer
   therefore can't get your files back through an agent.
+- **Cockpit TUI** (`systema tui`): a Tokyo-Night terminal dashboard to monitor, steer and approve agents on a
+  running node. Live agent list with state, a focus/approval panel, node + swarm vitals, a `tail -f` event log,
+  and a hotbar: `a` ask · `s` steer · `c` cancel · `y`/`n`/`A` answer approvals · `j`/`k` move · `q` quit.
+  Drives the node over its control socket (`watch` stream + `ask`/`steer`/`cancel`/`resolve`).
 - `systema status | agents | cards | id`. Every inbound and tool decision is logged to `~/.systema/audit.jsonl`.
+- Control from the shell too: `systema live <agent> <prompt>`, `steer`, `cancel-turn`, `sessions`, `approvals`,
+  `resolve <id> [--always|--deny]`, `rules`, `watch`.
 
 - **MCP servers** (stdio) behind the same broker. Declare them in `~/.systema/systema.toml`, then add
   `mcp = ["notes"]` to an agent's `[capabilities]`:

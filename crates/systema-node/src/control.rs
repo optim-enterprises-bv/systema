@@ -52,6 +52,8 @@ pub enum Control {
     Forget { agent: String, key: String },
     /// Loaded agents and their capabilities/skills.
     Agents,
+    /// Node vitals for status panels: peer id, addresses, counts.
+    Status,
     /// Stream kernel events as JSON lines until the client disconnects.
     Watch,
 }

@@ -6,6 +6,7 @@ members = [
     "crates/systema-kernel",
     "crates/systema-node",
     "crates/systema-cli",
+    "crates/systema-tui",
 ]
 
 [workspace.package]
@@ -29,6 +30,8 @@ base64 = "0.23"
 rand = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+ratatui = "0.30"
+crossterm = "0.29"
 futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
