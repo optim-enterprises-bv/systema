@@ -78,7 +78,8 @@ On nodes behind NAT: `bootstrap = ["/ip4/<public-ip>/tcp/4001/p2p/<relay-id>"]`,
   ```
 
 Not yet: microVM sandbox for public agents, task boards, HTTP A2A gateway, reputation.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model, and [docs/ROADMAP.md](docs/ROADMAP.md)
+for where Systema stands against other agentic systems and what's next.
 
 ## Install
 

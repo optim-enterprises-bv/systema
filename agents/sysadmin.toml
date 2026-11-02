@@ -20,6 +20,7 @@ fs_write = []
 network = false
 shell = false           # true = any other program, always with approval
 mcp = []
+board = true
 public = false          # local only
 
 # Programs run directly (no shell), cwd = workspace, scrubbed env, 60 s timeout.

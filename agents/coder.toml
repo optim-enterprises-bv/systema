@@ -20,4 +20,5 @@ fs_write = []
 network = false
 shell = false
 mcp = []
+board = true
 public = true           # advertise code-review to the swarm (requests still hit the trust gate)
