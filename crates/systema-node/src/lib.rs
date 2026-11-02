@@ -197,6 +197,8 @@ pub struct Node {
     /// Operator turns in flight, keyed by session, with a token to cancel them.
     running: HashMap<String, CancellationToken>,
     pending_approvals: PendingApprovals,
+    /// Last-run times for scheduled jobs (persisted), so restarts don't double-fire.
+    sched_state: systema_kernel::schedule::State,
 }
 
 impl Node {
@@ -276,6 +278,7 @@ impl Node {
         let policy: Policy = read_json(&home.join("trust.json"))?.unwrap_or_else(|| cfg.trust.clone());
         let inbox: Vec<InboxItem> = read_json(&home.join("inbox.json"))?.unwrap_or_default();
         let (done_tx, done_rx) = mpsc::channel(64);
+        let sched_state = systema_kernel::schedule::load_state(&home);
         Ok(Self {
             swarm,
             cfg,
@@ -297,6 +300,7 @@ impl Node {
             relays: Vec::new(),
             running: HashMap::new(),
             pending_approvals: Arc::default(),
+            sched_state,
         })
     }
 
@@ -371,6 +375,7 @@ impl Node {
 
         let mut announce = tokio::time::interval(Duration::from_secs(self.cfg.announce_secs.max(5)));
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
+        let mut schedules = tokio::time::interval(Duration::from_secs(15));
         info!(peer_id = %self.peer_id(), "systema node up");
 
         loop {
@@ -382,6 +387,7 @@ impl Node {
                 }
                 _ = announce.tick() => if self.cfg.gossip_cards { self.announce(&topic) },
                 _ = housekeeping.tick() => { self.expire_finds(); self.tend_relays(); }
+                _ = schedules.tick() => self.check_schedules(),
                 Some((channel, response)) = done_rx.recv() => {
                     if self.swarm.behaviour_mut().a2a.send_response(channel, response).is_err() {
                         debug!("requester went away before the reply was ready");
@@ -865,6 +871,32 @@ impl Node {
     }
 
     /// Spawn an operator turn, tracking its cancellation token under `session`.
+    /// Fire any scheduled jobs that are due. Jobs are reloaded from `schedules.toml` each tick,
+    /// so edits take effect without a restart. A job already running (its previous turn hasn't
+    /// finished) is skipped rather than overlapped.
+    fn check_schedules(&mut self) {
+        let jobs = systema_kernel::schedule::load(&self.home);
+        if jobs.is_empty() {
+            return;
+        }
+        let now = systema_proto::now_ms();
+        let due = systema_kernel::schedule::fire_due(&jobs, &mut self.sched_state, now);
+        systema_kernel::schedule::save_state(&self.home, &self.sched_state);
+        for job in due {
+            let session = format!("sched:{}", job.name);
+            if self.running.contains_key(&session) {
+                debug!(job = %job.name, "scheduled job still running; skipping this tick");
+                continue;
+            }
+            if self.kernel.agent(&job.agent).is_none() {
+                warn!(job = %job.name, agent = %job.agent, "scheduled job names an unknown agent");
+                continue;
+            }
+            info!(job = %job.name, agent = %job.agent, "firing scheduled job");
+            self.spawn_operator_turn(job.agent.clone(), session, job.prompt.clone());
+        }
+    }
+
     fn spawn_operator_turn(&mut self, agent: String, session: String, text: String) {
         let cancel = CancellationToken::new();
         self.running.insert(session.clone(), cancel.clone());
