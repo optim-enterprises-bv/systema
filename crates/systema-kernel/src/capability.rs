@@ -100,7 +100,8 @@ impl ToolRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
-    Ask(String),
+    /// Needs the operator. `rememberable` is false for Rule-of-Two escalations.
+    Ask { reason: String, rememberable: bool },
     Deny(String),
 }
 
@@ -305,18 +306,26 @@ impl Broker {
         };
 
         let decision = if trust.with(legs).is_trifecta() {
-            Decision::Ask(format!(
-                "`{}` would give this session private data, untrusted content and an outbound channel at once \
-                 (lethal trifecta); session so far: untrusted={} private={} outbound={}",
-                req.summary(),
-                trust.untrusted,
-                trust.private,
-                trust.outbound
-            ))
+            // Rule-of-Two escalation: never rememberable — an "always allow" here would
+            // permanently reopen the exfiltration path.
+            Decision::Ask {
+                reason: format!(
+                    "`{}` would give this session private data, untrusted content and an outbound channel at once \
+                     (lethal trifecta); session so far: untrusted={} private={} outbound={}",
+                    req.summary(),
+                    trust.untrusted,
+                    trust.private,
+                    trust.outbound
+                ),
+                rememberable: false,
+            }
         } else {
             match mode {
                 GrantMode::Allow => Decision::Allow,
-                GrantMode::Ask => Decision::Ask(format!("manifest requires approval for `{}`", req.summary())),
+                GrantMode::Ask => Decision::Ask {
+                    reason: format!("manifest requires approval for `{}`", req.summary()),
+                    rememberable: true,
+                },
             }
         };
         Checked { decision, legs, target }
@@ -541,7 +550,7 @@ mod tests {
     fn remote_session_cannot_read_private_without_operator() {
         let e = env();
         let c = e.broker.check(&manifest(), &TrustState::remote(), &read("~/src/proj/main.rs"));
-        assert!(matches!(c.decision, Decision::Ask(ref r) if r.contains("lethal trifecta")));
+        assert!(matches!(c.decision, Decision::Ask { reason: ref r, rememberable: false } if r.contains("lethal trifecta")));
     }
 
     #[test]
@@ -549,7 +558,7 @@ mod tests {
         let e = env();
         let after_read = TrustState::operator().with(PRIVATE);
         let c = e.broker.check(&manifest(), &after_read, &ToolRequest::Fetch { url: "https://example.com/?q=secret".into() });
-        assert!(matches!(c.decision, Decision::Ask(_)));
+        assert!(matches!(c.decision, Decision::Ask { .. }));
         let fresh = e.broker.check(&manifest(), &TrustState::operator(), &ToolRequest::Fetch { url: "https://example.com/".into() });
         assert_eq!(fresh.decision, Decision::Allow);
         assert!(fresh.legs.untrusted);
@@ -573,7 +582,7 @@ mod tests {
         let run = |p: &str, a: &[&str]| ToolRequest::Run { program: p.into(), args: a.iter().map(|s| s.to_string()).collect() };
         assert_eq!(e.broker.check(&m, &op, &run("git", &["status", "-s"])).decision, Decision::Allow);
         assert!(matches!(e.broker.check(&m, &op, &run("git", &["push"])).decision, Decision::Deny(_)));
-        assert!(matches!(e.broker.check(&m, &op, &run("rm", &["-rf", "x"])).decision, Decision::Ask(_)));
+        assert!(matches!(e.broker.check(&m, &op, &run("rm", &["-rf", "x"])).decision, Decision::Ask { .. }));
         assert!(matches!(e.broker.check(&m, &op, &run("/tmp/evil/ls", &[])).decision, Decision::Deny(_)));
         assert!(matches!(e.broker.check(&m, &op, &run("curl", &[])).decision, Decision::Deny(_)));
     }
@@ -583,7 +592,7 @@ mod tests {
         let e = env();
         let tainted = TrustState { untrusted: true, private: false, outbound: false };
         let c = e.broker.check(&manifest(), &tainted, &ToolRequest::WriteFile { path: "~/src/proj/new.rs".into(), content: "x".into() });
-        assert!(matches!(c.decision, Decision::Ask(_)));
+        assert!(matches!(c.decision, Decision::Ask { .. }));
     }
 
     fn mcp(server: &str, tool: &str) -> ToolRequest {
@@ -598,13 +607,13 @@ mod tests {
         let c = e.broker.check(&m, &op, &mcp("web", "search"));
         assert_eq!(c.decision, Decision::Allow);
         assert!(c.legs.untrusted && c.legs.outbound && !c.legs.private);
-        assert!(matches!(e.broker.check(&m, &op, &mcp("web", "delete")).decision, Decision::Ask(_)));
+        assert!(matches!(e.broker.check(&m, &op, &mcp("web", "delete")).decision, Decision::Ask { .. }));
         assert!(matches!(e.broker.check(&m, &op, &mcp("web", "exec")).decision, Decision::Deny(_)));
         assert!(matches!(e.broker.check(&m, &op, &mcp("github", "search")).decision, Decision::Deny(_)));
         // Unclassified servers default to all three legs: always the operator's call.
-        assert!(matches!(e.broker.check(&m, &op, &mcp("unclassified", "search")).decision, Decision::Ask(_)));
+        assert!(matches!(e.broker.check(&m, &op, &mcp("unclassified", "search")).decision, Decision::Ask { .. }));
         // A web search after reading private files would complete the trifecta.
         let after_read = op.with(PRIVATE);
-        assert!(matches!(e.broker.check(&m, &after_read, &mcp("web", "search")).decision, Decision::Ask(_)));
+        assert!(matches!(e.broker.check(&m, &after_read, &mcp("web", "search")).decision, Decision::Ask { .. }));
     }
 }

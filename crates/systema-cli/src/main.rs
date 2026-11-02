@@ -225,18 +225,24 @@ async fn main() -> anyhow::Result<()> {
 struct TerminalApprover;
 
 impl systema_kernel::Approver for TerminalApprover {
-    fn approve(&self, agent: &str, request: &systema_kernel::ToolRequest, reason: &str) -> bool {
+    fn approve(&self, agent: &str, request: &systema_kernel::ToolRequest, reason: &str, rememberable: bool) -> systema_kernel::Answer {
         use std::io::{BufRead as _, IsTerminal as _, Write as _};
+        use systema_kernel::Answer;
         if !std::io::stdin().is_terminal() {
             eprintln!("[systema] {agent} wants `{}`: needs approval but stdin is not a terminal; denied", request.summary());
-            return false;
+            return Answer::Deny;
         }
+        let choices = if rememberable { "[y]es once / [a]lways / [N]o" } else { "[y]es once / [N]o" };
         let mut err = std::io::stderr();
-        let _ = write!(err, "\n[systema] {agent} wants to: {}\n          why asking: {reason}\n          allow once? [y/N] ", request.summary());
+        let _ = write!(err, "\n[systema] {agent} wants to: {}\n          why asking: {reason}\n          {choices} ", request.summary());
         let _ = err.flush();
         let mut line = String::new();
         let _ = std::io::stdin().lock().read_line(&mut line);
-        matches!(line.trim(), "y" | "Y" | "yes")
+        match line.trim() {
+            "a" | "A" | "always" if rememberable => Answer::Always,
+            "y" | "Y" | "yes" => Answer::Once,
+            _ => Answer::Deny,
+        }
     }
 }
 
