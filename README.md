@@ -12,6 +12,8 @@ Scaffold, phase 1–2. Works today:
 
 - `systema init`: creates `~/.systema` with an ed25519 node identity (`0600`), config and example agents.
 - `systema ask <agent> <prompt>`: one turn through the kernel: append-only session → priority GPU scheduler → titan-engine.
+- `systema do <prompt>`: ask the OS — the orchestrator routes to the best agent (falling back to `operator`).
+- `systema propose`: review the audit log and draft improvement proposals to `~/.systema/proposals/` (applied by hand, never automatically).
 - `systema node`: libp2p node (QUIC+TCP, relay client + DCUtR, mDNS, Kademlia, GossipSub) that announces
   signed agent cards and records verified cards from peers.
 - **Agent ↔ agent requests across nodes** (`/systema/a2a/1.0.0`): `systema send <peer> <agent> --skill <id> <text>`.

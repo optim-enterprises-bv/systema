@@ -33,6 +33,8 @@ enum Cmd {
     Ask { agent: String, prompt: Vec<String> },
     /// Ask the OS: the orchestrator routes your request to the best agent and runs it.
     Do { prompt: Vec<String> },
+    /// Review the audit log and draft improvement proposals for you to apply (nothing is changed).
+    Propose,
     /// Run the swarm node (discovery, card announcements, inbound requests) until ctrl-c.
     Node,
     /// List agents discovered on other nodes (needs a running node).
@@ -100,6 +102,7 @@ const EXAMPLE_AGENTS: &[(&str, &str)] = &[
     ("coder.toml", include_str!("../../../agents/coder.toml")),
     ("sysadmin.toml", include_str!("../../../agents/sysadmin.toml")),
     ("researcher.toml", include_str!("../../../agents/researcher.toml")),
+    ("improver.toml", include_str!("../../../agents/improver.toml")),
 ];
 
 fn identity_path(home: &Path) -> PathBuf {
@@ -200,6 +203,13 @@ async fn main() -> anyhow::Result<()> {
                 .ask_with_fallback(&agent, &agent, &prompt, None, TrustState::operator(), &TerminalApprover, &CancellationToken::new())
                 .await?;
             println!("{answer}");
+        }
+        Cmd::Propose => {
+            let k = Kernel::new(Config::load(&home)?)?;
+            eprintln!("[reviewing the audit log — this uses the deep model and may take a minute]");
+            let path = k.propose_improvements(&TerminalApprover).await?;
+            let doc = std::fs::read_to_string(&path)?;
+            println!("{doc}\n[saved to {}]", path.display());
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;
