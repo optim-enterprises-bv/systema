@@ -155,13 +155,34 @@ async fn handle_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
             KeyCode::Enter => {
                 let text = input.buffer.trim().to_string();
                 if !text.is_empty() {
-                    let c = match input.kind {
-                        InputKind::Ask => Control::Ask { agent: input.target.clone(), text },
-                        InputKind::Steer => Control::Steer { session: input.target.clone(), text },
-                    };
-                    match cmd(app, c).await {
-                        Ok(_) => app.toast(format!("sent to {}", input.target)),
-                        Err(e) => app.toast(e),
+                    match input.kind {
+                        InputKind::Orchestrate => {
+                            // Route to the best agent, then run it there.
+                            match cmd(app, Control::Route { text: text.clone() }).await {
+                                Ok(v) => {
+                                    let agent = v["agent"].as_str().unwrap_or("operator").to_string();
+                                    match cmd(app, Control::Ask { agent: agent.clone(), text }).await {
+                                        Ok(_) => app.toast(format!("routed to {agent}")),
+                                        Err(e) => app.toast(e),
+                                    }
+                                }
+                                Err(e) => app.toast(e),
+                            }
+                        }
+                        InputKind::Ask => {
+                            let c = Control::Ask { agent: input.target.clone(), text };
+                            match cmd(app, c).await {
+                                Ok(_) => app.toast(format!("sent to {}", input.target)),
+                                Err(e) => app.toast(e),
+                            }
+                        }
+                        InputKind::Steer => {
+                            let c = Control::Steer { session: input.target.clone(), text };
+                            match cmd(app, c).await {
+                                Ok(_) => app.toast(format!("sent to {}", input.target)),
+                                Err(e) => app.toast(e),
+                            }
+                        }
                     }
                 }
             }
@@ -200,6 +221,9 @@ async fn handle_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => app.should_quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
+        KeyCode::Char('o') => {
+            app.input = Some(InputState { kind: InputKind::Orchestrate, target: "OS".into(), buffer: String::new() });
+        }
         KeyCode::Char('a') => {
             if let Some(agent) = app.selected_agent() {
                 app.input = Some(InputState { kind: InputKind::Ask, target: agent.name.clone(), buffer: String::new() });

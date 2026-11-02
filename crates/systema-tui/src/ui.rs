@@ -218,7 +218,8 @@ fn hotbar(f: &mut Frame, area: Rect, app: &App) {
         spans.extend(theme::keycap("n", "deny", true));
         spans.extend(theme::keycap("A", "always", true));
     }
-    spans.extend(theme::keycap("a", "ask", !approving));
+    spans.extend(theme::keycap("o", "ask OS", !approving));
+    spans.extend(theme::keycap("a", "ask agent", !approving));
     spans.extend(theme::keycap("s", "steer", !approving));
     spans.extend(theme::keycap("c", "cancel", !approving));
     spans.extend(theme::keycap("j/k", "move", !approving));
@@ -234,6 +235,7 @@ fn input_line(f: &mut Frame, area: Rect, app: &App) {
     let label = match input.kind {
         crate::app::InputKind::Ask => "ask",
         crate::app::InputKind::Steer => "steer",
+        crate::app::InputKind::Orchestrate => "ask OS",
     };
     let line = Line::from(vec![
         Span::styled(format!(" {label} "), Style::default().fg(theme::BG).bg(theme::PURPLE).add_modifier(Modifier::BOLD)),

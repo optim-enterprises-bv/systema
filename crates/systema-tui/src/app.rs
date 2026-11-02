@@ -101,6 +101,8 @@ pub struct StatusView {
 pub enum InputKind {
     Ask,
     Steer,
+    /// Ask the OS: route to the best agent, then run.
+    Orchestrate,
 }
 
 pub struct InputState {

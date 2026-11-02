@@ -766,6 +766,15 @@ impl Node {
                     Ok(json!({ "started": true }))
                 }
             }
+            Control::Route { text } => {
+                // Routing is a model call; run it off the event loop and reply when done.
+                let kernel = self.kernel.clone();
+                tokio::spawn(async move {
+                    let r = kernel.route(&text).await.map(|a| json!({ "agent": a })).map_err(|e| e.to_string());
+                    let _ = reply.send(r);
+                });
+                return;
+            }
             Control::Steer { session, text } => {
                 if self.running.contains_key(&session) {
                     let kernel = self.kernel.clone();

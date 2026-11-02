@@ -36,6 +36,8 @@ pub enum Control {
     // --- agent control plane ---
     /// Start a turn: ask a local agent in the operator's session.
     Ask { agent: String, text: String },
+    /// Orchestrate: pick the best agent for a request (returns `{agent}`; does not run it).
+    Route { text: String },
     /// Inject operator guidance into a running session (or start one if idle).
     Steer { session: String, text: String },
     /// Cancel a running turn.
