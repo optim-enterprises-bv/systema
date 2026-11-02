@@ -8,6 +8,7 @@ pub mod capability;
 pub mod config;
 pub mod events;
 pub mod inference;
+pub mod kb;
 pub mod manifest;
 pub mod mcp;
 pub mod schedule;
@@ -645,6 +646,14 @@ impl Kernel {
                 }
             }
             ToolRequest::TaskList => Ok(tasks::render(&tasks::list(&self.config.home, 50))),
+            ToolRequest::KbAdd { title, source, text } => {
+                kb::add(&self.config.home, title, source, &m.name, m.capabilities.public, session.trust.untrusted, text)
+                    .map(|n| format!("added {n} chunk(s) to the knowledge base under `{title}`"))
+            }
+            ToolRequest::KbSearch { query } => {
+                let hits = kb::search(&self.config.home, query, kb::DEFAULT_K);
+                Ok(kb::render(&hits))
+            }
             _ => tools::execute(&req, &checked, workspace).await,
         };
         match result {

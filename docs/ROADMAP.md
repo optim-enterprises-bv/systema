@@ -36,14 +36,18 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       *Next on this: event triggers (file-watch, board-post, inbound swarm message) and daily
       clock-time (`at = "09:00"`) scheduling.*
 
+- [x] **Shared knowledge base with retrieval** (`kb_add` / `kb_search`, `systema kb`) — agents save
+      notes/documents (chunked) and retrieve them by **BM25 lexical search**, no embedding model
+      required. Same untrusted-by-provenance model as the board. *Next: a vector index when
+      titan-engine serves an embedding model (the store is already shaped for it).*
+
 ## Tier 1 — biggest leverage (make it an OS that *does* things)
 - [ ] **Parallel + cross-swarm delegation.** Delegation is sequential and local today; add parallel
       fan-out of independent sub-tasks and delegation to agents on other swarm nodes over A2A.
 - [ ] **Event triggers.** Fire jobs on a file change, a new board post, or an inbound swarm message
       (not just a timer), plus daily clock-time scheduling — so the OS reacts, not just ticks.
-- [ ] **Semantic memory / retrieval (RAG).** Upgrade from key/value `memory` to embeddings +
-      retrieval over a shared knowledge base and ingested documents (cf. Letta/MemGPT, Mem0),
-      with shared vs per-agent tiers. Needs a local embedding model behind titan-engine.
+- [ ] **Vector retrieval for the KB.** Add embeddings behind titan-engine and a vector index, so
+      `kb_search` does semantic recall, not just keyword matching.
 
 ## Tier 2 — strong multipliers
 - [ ] **Web search + extract** (not just raw `fetch_url`) — cf. Hermes `web_search`/`web_extract`.

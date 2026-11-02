@@ -21,6 +21,7 @@ network = true
 shell = true            # any program; risky ones ask for approval (auto-approved via the TUI/CLI)
 board = true
 delegate = true
+kb = true
 public = false
 
 # Common read-only commands run without asking; everything else goes through `shell` (approval).
