@@ -30,11 +30,11 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       back), delegation is refused from untrusted sessions (no privilege escalation), and chains
       are depth-limited and non-self. *Next on this: parallel fan-out and cross-swarm delegation.*
 
-- [x] **Scheduling.** The node runs agent turns on an interval from `$SYSTEMA_HOME/schedules.toml`
-      (`every = "6h"`), persisting last-run times across restarts and skipping a job whose previous
-      run is still going. `systema schedule` lists jobs; `systema schedule <name>` runs one now.
-      *Next on this: event triggers (file-watch, board-post, inbound swarm message) and daily
-      clock-time (`at = "09:00"`) scheduling.*
+- [x] **Scheduling & triggers.** The node runs agent turns on their own from `schedules.toml` on a
+      trigger: an interval (`every = "6h"`), a file/dir change (`on_change`), or a new board post
+      (`on_board`). Cursors persist across restarts; a job arms on first sight and fires on the next
+      change; overlapping runs are skipped. `systema schedule` lists; `systema schedule <name>` runs
+      one now. *Next: inbound-swarm-message trigger and daily clock-time (`at = "09:00"`).*
 
 - [x] **Shared knowledge base with retrieval** (`kb_add` / `kb_search`, `systema kb`) — agents save
       notes/documents (chunked) and retrieve them by **BM25 lexical search**, no embedding model
@@ -44,8 +44,8 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 ## Tier 1 — biggest leverage (make it an OS that *does* things)
 - [ ] **Parallel + cross-swarm delegation.** Delegation is sequential and local today; add parallel
       fan-out of independent sub-tasks and delegation to agents on other swarm nodes over A2A.
-- [ ] **Event triggers.** Fire jobs on a file change, a new board post, or an inbound swarm message
-      (not just a timer), plus daily clock-time scheduling — so the OS reacts, not just ticks.
+- [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
+      to the file-change and board-post triggers already shipped.
 - [ ] **Vector retrieval for the KB.** Add embeddings behind titan-engine and a vector index, so
       `kb_search` does semantic recall, not just keyword matching.
 

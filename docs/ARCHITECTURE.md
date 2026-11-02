@@ -55,11 +55,13 @@ Systema applies it in the kernel:
 - **Agent memory.** `memory` (set/get/list/delete) is each agent's own persistent key/value store, kept in its
   workspace (`memory.json`) and surviving restarts. `get` carries the *private* leg, since recalling a value can
   reintroduce private data into the context.
-- **Scheduling.** The node fires agent turns on their own from `$SYSTEMA_HOME/schedules.toml` — each `[[job]]`
-  names an agent, a prompt and an interval (`every = "6h"`). Last-run times are persisted
-  (`schedule-state.json`) so a restart neither double-fires nor re-arms the clock; a newly added job arms on
-  first sight and fires one interval later; a job whose previous run is still going is skipped, not overlapped.
-  Scheduled turns go through the same broker, approvals and audit as any operator turn.
+- **Scheduling & triggers.** The node fires agent turns on their own from `$SYSTEMA_HOME/schedules.toml`. Each
+  `[[job]]` names an agent, a prompt and exactly one trigger: an interval (`every = "6h"`), a file/dir change
+  (`on_change = "~/path"`, fires when the mtime grows), or a new board post (`on_board = "ops"`, empty/`*` = any
+  topic). A newly seen job arms its trigger and fires on the *next* change, not at startup; the per-job cursor is
+  persisted (`schedule-state.json`) so a restart neither double-fires nor re-arms; a job whose previous run is
+  still going is skipped, not overlapped. Triggered turns go through the same broker, approvals and audit as any
+  operator turn.
 - **Delegation + task board.** `delegate_task` hands a self-contained sub-task to another agent (`delegate`
   capability required); the kernel runs a full turn for the assignee and returns its result to the caller.
   Every delegation is recorded on a durable task board (`tasks.jsonl`; `task_list` / `systema tasks`), moving

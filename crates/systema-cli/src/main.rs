@@ -236,8 +236,8 @@ async fn main() -> anyhow::Result<()> {
                         println!("no scheduled jobs (define them in {}/schedules.toml)", home.display());
                     }
                     for j in &jobs {
-                        let last = state.get(&j.name).map(|ms| format!("last run {}s ago", (systema_proto::now_ms().saturating_sub(*ms)) / 1000)).unwrap_or_else(|| "not yet armed".into());
-                        println!("{:<20} every {:<6} {:<10} [{}] — {}", j.name, j.every, if j.enabled { "enabled" } else { "disabled" }, last, j.prompt.chars().take(60).collect::<String>());
+                        let armed = if state.contains_key(&j.name) { "armed" } else { "new" };
+                        println!("{:<18} {:<24} {:<8} [{}] — {}", j.name, j.describe_trigger(), if j.enabled { "enabled" } else { "disabled" }, armed, j.prompt.chars().take(50).collect::<String>());
                     }
                 }
                 Some(n) => match jobs.iter().find(|j| j.name == n) {
