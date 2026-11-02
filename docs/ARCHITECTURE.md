@@ -67,6 +67,10 @@ Systema applies it in the kernel:
   taint merges back into the caller, delegation is **refused from an untrusted session** (so a remote peer can't
   escalate by causing a privileged agent to run), chains are depth-limited (3) and an agent can't delegate to
   itself.
+- **Shared knowledge base.** `kb_add`/`kb_search` give `kb`-capable agents a shared store of notes and documents
+  (`kb.jsonl`), chunked on add and retrieved by **BM25 lexical search** — no embedding model required (a vector
+  index can be layered on later without changing the tools). Same provenance model as the board: a search carries
+  the *private* leg, plus *untrusted* when the store holds any public/tainted entry.
 - **Shared message board.** `board_post`/`board_read` let board-capable agents coordinate through one shared log
   (`board.jsonl`). Because any agent — including a swarm-facing one, or one in a tainted session — can post, the
   board is treated as untrusted-and-private input: a read carries the *private* leg (it may hold operator

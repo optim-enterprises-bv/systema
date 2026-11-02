@@ -83,6 +83,10 @@ pub enum ToolRequest {
     DelegateTask { agent: String, task: String },
     /// Read the task board (recent delegated tasks and their status).
     TaskList,
+    /// Add a document/note to the shared knowledge base.
+    KbAdd { title: String, source: String, text: String },
+    /// Search the shared knowledge base.
+    KbSearch { query: String },
     /// A `tools/call` on an operator-configured MCP server. `arguments` is the model's JSON.
     Mcp { server: String, tool: String, arguments: String },
 }
@@ -103,6 +107,8 @@ impl ToolRequest {
             ToolRequest::BoardRead { .. } => "board_read",
             ToolRequest::DelegateTask { .. } => "delegate_task",
             ToolRequest::TaskList => "task_list",
+            ToolRequest::KbAdd { .. } => "kb_add",
+            ToolRequest::KbSearch { .. } => "kb_search",
             ToolRequest::Mcp { .. } => "mcp",
         }
     }
@@ -126,6 +132,8 @@ impl ToolRequest {
             },
             ToolRequest::DelegateTask { agent, task } => format!("delegate_task → {agent}: {}", task.chars().take(80).collect::<String>()),
             ToolRequest::TaskList => "task_list".into(),
+            ToolRequest::KbAdd { title, .. } => format!("kb_add {title}"),
+            ToolRequest::KbSearch { query } => format!("kb_search {:?}", query.chars().take(60).collect::<String>()),
             ToolRequest::Mcp { server, tool, arguments } => {
                 let a: String = arguments.chars().take(120).collect();
                 format!("mcp {server}.{tool} {a}")
@@ -155,6 +163,8 @@ pub enum Target {
     Board,
     /// A delegated sub-task or the task board (handled in the kernel).
     Delegate,
+    /// The shared knowledge base (handled in the kernel).
+    Kb,
     None,
 }
 
@@ -368,6 +378,21 @@ impl Broker {
                 }
                 // Task results may contain private data pulled by the assignee.
                 (GrantMode::Allow, PRIVATE, Target::Delegate)
+            }
+            ToolRequest::KbAdd { .. } => {
+                if !caps.kb {
+                    return Checked::deny("this agent has no knowledge-base capability");
+                }
+                (GrantMode::Allow, NONE, Target::Kb)
+            }
+            ToolRequest::KbSearch { .. } => {
+                if !caps.kb {
+                    return Checked::deny("this agent has no knowledge-base capability");
+                }
+                // KB content is private (it may hold the operator's notes); if any entry is from
+                // a public/tainted author, a result is also untrusted. Same model as the board.
+                let legs = if crate::kb::has_untrusted(&self.systema_home) { PRIVATE.with(UNTRUSTED) } else { PRIVATE };
+                (GrantMode::Allow, legs, Target::Kb)
             }
             ToolRequest::Run { program, args } => {
                 if program.contains('/') {
@@ -616,6 +641,7 @@ mod tests {
                 mcp: vec!["web".into(), "unclassified".into()],
                 board: true,
                 delegate: false,
+                kb: true,
                 public: true,
             },
         }

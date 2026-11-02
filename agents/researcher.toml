@@ -12,4 +12,5 @@ If a tool request is denied, say so plainly and do not try to work around it.
 fs_read = ["~/src"]
 network = true          # fetch_url: public http(s) only
 board = true
+kb = true
 public = false

@@ -39,6 +39,14 @@ enum Cmd {
     Tasks,
     /// List scheduled jobs (from schedules.toml); with a name, run that job now.
     Schedule { name: Option<String> },
+    /// Search the shared knowledge base for notes/docs agents have saved.
+    Kb { query: Vec<String> },
+    /// Add a note/document to the shared knowledge base.
+    KbAdd {
+        #[arg(long)]
+        title: String,
+        text: Vec<String>,
+    },
     /// Run the swarm node (discovery, card announcements, inbound requests) until ctrl-c.
     Node,
     /// List agents discovered on other nodes (needs a running node).
@@ -240,6 +248,14 @@ async fn main() -> anyhow::Result<()> {
                     None => anyhow::bail!("no scheduled job named `{n}`"),
                 },
             }
+        }
+        Cmd::Kb { query } => {
+            let hits = systema_kernel::kb::search(&home, &query.join(" "), systema_kernel::kb::DEFAULT_K);
+            println!("{}", systema_kernel::kb::render(&hits));
+        }
+        Cmd::KbAdd { title, text } => {
+            let n = systema_kernel::kb::add(&home, &title, "cli", "operator", false, false, &text.join(" "))?;
+            println!("added {n} chunk(s) to the knowledge base under `{title}`");
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;

@@ -65,6 +65,8 @@ pub struct Capabilities {
     pub board: bool,
     /// May hand sub-tasks to other agents (`delegate_task`) and read the task board.
     pub delegate: bool,
+    /// May add to and search the shared knowledge base (`kb_add`/`kb_search`).
+    pub kb: bool,
     /// Whether this agent's skills are advertised to the swarm.
     pub public: bool,
 }
