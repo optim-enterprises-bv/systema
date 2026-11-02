@@ -10,6 +10,7 @@ pub mod events;
 pub mod inference;
 pub mod manifest;
 pub mod mcp;
+pub mod schedule;
 pub mod scheduler;
 pub mod session;
 pub mod tasks;

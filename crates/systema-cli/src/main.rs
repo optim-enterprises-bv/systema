@@ -37,6 +37,8 @@ enum Cmd {
     Propose,
     /// Show the task board: recent tasks agents delegated to each other, with status.
     Tasks,
+    /// List scheduled jobs (from schedules.toml); with a name, run that job now.
+    Schedule { name: Option<String> },
     /// Run the swarm node (discovery, card announcements, inbound requests) until ctrl-c.
     Node,
     /// List agents discovered on other nodes (needs a running node).
@@ -216,6 +218,28 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Tasks => {
             let tasks = systema_kernel::tasks::list(&home, 50);
             println!("{}", systema_kernel::tasks::render(&tasks));
+        }
+        Cmd::Schedule { name } => {
+            let jobs = systema_kernel::schedule::load(&home);
+            match name {
+                None => {
+                    let state = systema_kernel::schedule::load_state(&home);
+                    if jobs.is_empty() {
+                        println!("no scheduled jobs (define them in {}/schedules.toml)", home.display());
+                    }
+                    for j in &jobs {
+                        let last = state.get(&j.name).map(|ms| format!("last run {}s ago", (systema_proto::now_ms().saturating_sub(*ms)) / 1000)).unwrap_or_else(|| "not yet armed".into());
+                        println!("{:<20} every {:<6} {:<10} [{}] — {}", j.name, j.every, if j.enabled { "enabled" } else { "disabled" }, last, j.prompt.chars().take(60).collect::<String>());
+                    }
+                }
+                Some(n) => match jobs.iter().find(|j| j.name == n) {
+                    Some(j) => {
+                        control(&home, Control::Ask { agent: j.agent.clone(), text: j.prompt.clone() }).await?;
+                        println!("started `{}` on {} — follow with `systema watch` or `systema tui`", j.name, j.agent);
+                    }
+                    None => anyhow::bail!("no scheduled job named `{n}`"),
+                },
+            }
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;

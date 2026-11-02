@@ -30,11 +30,17 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       back), delegation is refused from untrusted sessions (no privilege escalation), and chains
       are depth-limited and non-self. *Next on this: parallel fan-out and cross-swarm delegation.*
 
+- [x] **Scheduling.** The node runs agent turns on an interval from `$SYSTEMA_HOME/schedules.toml`
+      (`every = "6h"`), persisting last-run times across restarts and skipping a job whose previous
+      run is still going. `systema schedule` lists jobs; `systema schedule <name>` runs one now.
+      *Next on this: event triggers (file-watch, board-post, inbound swarm message) and daily
+      clock-time (`at = "09:00"`) scheduling.*
+
 ## Tier 1 — biggest leverage (make it an OS that *does* things)
 - [ ] **Parallel + cross-swarm delegation.** Delegation is sequential and local today; add parallel
       fan-out of independent sub-tasks and delegation to agents on other swarm nodes over A2A.
-- [ ] **Scheduling & triggers.** A daemon loop that runs agents on a schedule (cron), on a file
-      change, on inbound swarm messages, or on a board post — so the OS acts without being prompted.
+- [ ] **Event triggers.** Fire jobs on a file change, a new board post, or an inbound swarm message
+      (not just a timer), plus daily clock-time scheduling — so the OS reacts, not just ticks.
 - [ ] **Semantic memory / retrieval (RAG).** Upgrade from key/value `memory` to embeddings +
       retrieval over a shared knowledge base and ingested documents (cf. Letta/MemGPT, Mem0),
       with shared vs per-agent tiers. Needs a local embedding model behind titan-engine.

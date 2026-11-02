@@ -1,0 +1,17 @@
+# Example scheduled jobs. Copy to $SYSTEMA_HOME/schedules.toml (default ~/.systema/) and edit.
+# The node fires each enabled job on its interval, through the normal broker/approvals/audit.
+# A newly added job arms on first sight and fires one interval later (not at startup).
+
+[[job]]
+name = "log-sweep"
+agent = "operator"          # optional; defaults to operator
+prompt = "Summarize any errors or warnings in the last 6 hours of the system journal, and post a short note to the message board on topic 'ops' if anything needs attention."
+every = "6h"                # 90s, 30m, 6h, 1d …
+enabled = false             # flip to true to activate
+
+[[job]]
+name = "disk-watch"
+agent = "sysadmin"
+prompt = "Check disk usage. If any filesystem is over 90% full, post a warning to the board on topic 'ops'."
+every = "12h"
+enabled = false
