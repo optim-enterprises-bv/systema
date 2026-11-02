@@ -304,14 +304,22 @@ impl Kernel {
         use std::collections::BTreeSet;
         let mut tools: BTreeMap<String, u64> = BTreeMap::new();
         let mut per_agent: BTreeMap<String, u64> = BTreeMap::new();
-        let mut denials: BTreeMap<String, u64> = BTreeMap::new();
+        // Each denial group tracks count and the most recent timestamp, so a group whose last
+        // occurrence is old can be seen as likely already-fixed instead of proposed again.
+        let mut denials: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         // Distinct real paths behind path-denials, so proposals can name exact fs_read entries.
         let mut denied_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut asked = 0u64;
         let mut total = 0u64;
+        let (mut oldest, mut newest) = (u64::MAX, 0u64);
         for line in &lines[start..] {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
             total += 1;
+            let ts = v["ts"].as_u64().unwrap_or(0);
+            if ts > 0 {
+                oldest = oldest.min(ts);
+                newest = newest.max(ts);
+            }
             if let Some(t) = v["tool"].as_str() {
                 *tools.entry(t.to_string()).or_default() += 1;
             }
@@ -324,7 +332,9 @@ impl Kernel {
                 let agent = v["agent"].as_str().unwrap_or("?");
                 let reason = outcome.strip_prefix("denied: ").unwrap_or(outcome);
                 let key = format!("{agent}: {}", generalize_reason(reason));
-                *denials.entry(key.clone()).or_default() += 1;
+                let e = denials.entry(key.clone()).or_insert((0, 0));
+                e.0 += 1;
+                e.1 = e.1.max(ts);
                 // Keep the concrete path for fs_read/fs_write ceiling denials.
                 if let Some(path) = reason.strip_suffix(" is outside this agent's fs_read").or_else(|| reason.strip_suffix(" is outside this agent's fs_write")) {
                     denied_paths.entry(key).or_default().insert(path.to_string());
@@ -333,10 +343,16 @@ impl Kernel {
                 asked += 1;
             }
         }
+        let now = now_ms();
         let fmt = |m: &BTreeMap<String, u64>| -> String {
             let mut v: Vec<_> = m.iter().collect();
             v.sort_by(|a, b| b.1.cmp(a.1));
             v.iter().map(|(k, n)| format!("  {n:>4}  {k}")).collect::<Vec<_>>().join("\n")
+        };
+        let fmt_denials = |m: &BTreeMap<String, (u64, u64)>| -> String {
+            let mut v: Vec<_> = m.iter().collect();
+            v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            v.iter().map(|(k, (n, last))| format!("  {n:>4}  {k}  (last seen {})", human_age(now.saturating_sub(*last)))).collect::<Vec<_>>().join("\n")
         };
         if total == 0 {
             return "No audit entries yet — run some agent turns first.".into();
@@ -356,12 +372,57 @@ impl Kernel {
             }
             out
         };
+        let span = if oldest <= newest && oldest != u64::MAX {
+            format!("entries span {} ago → {} ago", human_age(now.saturating_sub(oldest)), human_age(now.saturating_sub(newest)))
+        } else {
+            "unknown time span".into()
+        };
         format!(
-            "audit entries summarized: {total}\n\nby agent:\n{}\n\nby tool:\n{}\n\napprovals asked: {asked}\n\ndenials (by agent + reason):\n{}\n\ndistinct paths denied (fs_read/fs_write):\n{}",
+            "audit entries summarized: {total} ({span})\n\
+             Note: a denial group whose last occurrence is old (hours+) is likely already fixed — do not \
+             propose a change for it unless it is also recent.\n\n\
+             by agent:\n{}\n\nby tool:\n{}\n\napprovals asked: {asked}\n\ndenials (by agent + reason, most recent age shown):\n{}\n\ndistinct paths denied (fs_read/fs_write):\n{}",
             fmt(&per_agent),
             fmt(&tools),
-            if denials.is_empty() { "  (none)".into() } else { fmt(&denials) },
+            if denials.is_empty() { "  (none)".into() } else { fmt_denials(&denials) },
             if paths.is_empty() { "  (none)".into() } else { paths.trim_end() }
+        )
+    }
+
+    /// The agent's system prompt, with a kernel-generated "working context" appended so the
+    /// model knows its workspace and its read/write roots instead of guessing paths.
+    fn system_prompt_for(&self, m: &AgentManifest) -> String {
+        let caps = &m.capabilities;
+        let ws = self.broker.workspace(&m.name);
+        let list = |v: &[String]| if v.is_empty() { "nothing outside your workspace".to_string() } else { v.join(", ") };
+        let mut extras = Vec::new();
+        if caps.network {
+            extras.push("fetch public http(s) URLs");
+        }
+        if caps.shell && !caps.public {
+            extras.push("run a bash shell in the user's home");
+        }
+        if !caps.exec.is_empty() {
+            extras.push("run specific pre-approved programs");
+        }
+        let doing = if extras.is_empty() {
+            "You cannot reach the network or run programs.".to_string()
+        } else {
+            format!("You can also: {}.", extras.join("; "))
+        };
+        format!(
+            "{}\n\n[working context — enforced by the kernel, not negotiable]\n\
+             Your workspace is {} — relative paths resolve there and it is always readable and writable.\n\
+             You can READ: {}.\n\
+             You can WRITE: {}.\n\
+             {doing}\n\
+             Work within these limits. Don't keep guessing new paths after one is denied — a single denial \
+             means it is outside your reach, so state plainly what you could not access (the system can route \
+             that part to a more capable agent) rather than trying more variations.",
+            m.system_prompt.trim_end(),
+            ws.display(),
+            list(&caps.fs_read),
+            list(&caps.fs_write),
         )
     }
 
@@ -380,9 +441,12 @@ impl Kernel {
         cancel: &CancellationToken,
     ) -> anyhow::Result<String> {
         let m = self.agent(agent).with_context(|| format!("no agent named {agent}"))?;
+        // Tell the agent, in its (cache-stable) system prompt, where it is and what it can
+        // reach — otherwise it guesses paths and wastes turns on denied list_dir/read_file.
+        let sys_prompt = self.system_prompt_for(m);
         let session = {
             let mut s = self.sessions.lock().await;
-            let fresh = || Arc::new(Mutex::new(Session::new(&m.system_prompt, initial_trust)));
+            let fresh = || Arc::new(Mutex::new(Session::new(sys_prompt.clone(), initial_trust)));
             let entry = s.entry(session_key.to_string()).or_insert_with(fresh);
             if entry.try_lock().is_ok_and(|g| g.approx_tokens() > SESSION_TOKEN_BUDGET) {
                 *entry = fresh();
@@ -689,6 +753,20 @@ impl Kernel {
     }
 }
 
+/// A coarse human age for a millisecond duration, e.g. "3h", "2d", "just now".
+fn human_age(ms: u64) -> String {
+    let s = ms / 1000;
+    if s < 60 {
+        "just now".into()
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86400 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86400)
+    }
+}
+
 /// Collapse the volatile specifics of a denial reason (paths, exact commands) so repeated
 /// denials of the same shape group together in the audit digest.
 fn generalize_reason(reason: &str) -> String {
@@ -708,4 +786,25 @@ fn generalize_reason(reason: &str) -> String {
     }
     // Otherwise keep the first clause, trimmed, so long reasons don't dominate the digest.
     reason.split(['(', ';']).next().unwrap_or(reason).trim().chars().take(100).collect()
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::{generalize_reason, human_age};
+
+    #[test]
+    fn human_age_buckets() {
+        assert_eq!(human_age(5_000), "just now");
+        assert_eq!(human_age(120_000), "2m");
+        assert_eq!(human_age(3 * 3_600_000), "3h");
+        assert_eq!(human_age(2 * 86_400_000), "2d");
+    }
+
+    #[test]
+    fn generalize_reason_groups_paths_and_commands() {
+        assert_eq!(generalize_reason("/home/x/Downloads is outside this agent's fs_read"), "<path> is outside this agent's fs_read");
+        assert_eq!(generalize_reason("/a/b is outside this agent's fs_write"), "<path> is outside this agent's fs_write");
+        assert_eq!(generalize_reason("no exec grant covers `git push`"), "no exec grant covers `<program> <args>`");
+        assert!(generalize_reason("/proc/1/mounts is protected by a hard rule (creds)").contains("protected by a hard rule"));
+    }
 }
