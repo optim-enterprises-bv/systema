@@ -45,7 +45,21 @@ pub struct NodeConfig {
     pub mdns: bool,
     /// Seconds between agent-card announcements on gossip.
     pub announce_secs: u64,
+    /// Announce cards on gossip at all (DHT lookup + direct card fetch work without it).
+    pub gossip_cards: bool,
+    /// Serve the DHT for others. `auto` = only once an external address is confirmed;
+    /// `on` for public or LAN nodes (bootstrap nodes must be `on`); `off` for client-only.
+    pub dht_server: DhtMode,
     pub trust: Policy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DhtMode {
+    #[default]
+    Auto,
+    On,
+    Off,
 }
 
 impl Default for Config {
@@ -81,6 +95,8 @@ impl Default for NodeConfig {
             bootstrap: vec![],
             mdns: true,
             announce_secs: 60,
+            gossip_cards: true,
+            dht_server: DhtMode::Auto,
             trust: Policy::default(),
         }
     }

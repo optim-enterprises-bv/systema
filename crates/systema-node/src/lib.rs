@@ -13,11 +13,11 @@
 
 pub mod control;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use futures::StreamExt as _;
@@ -30,7 +30,10 @@ use libp2p::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use systema_kernel::{Kernel, config::NodeConfig};
+use systema_kernel::{
+    Kernel,
+    config::{DhtMode, NodeConfig},
+};
 use systema_proto::{
     A2A_PROTOCOL, A2aResponse, AgentCard, DEFAULT_MAX_AGE_MS, MAX_REQUEST_TEXT, Message, Part, Role, Signed, now_ms,
     random_id,
@@ -48,6 +51,32 @@ pub const IDENTIFY_PROTOCOL: &str = "/systema/id/1.0.0";
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 type A2a = request_response::json::Behaviour<Signed<Message>, A2aResponse>;
+type Cards = request_response::json::Behaviour<CardQuery, Vec<Signed<AgentCard>>>;
+
+pub const CARD_PROTOCOL: &str = "/systema/card/1.0.0";
+/// How long `find` waits for DHT answers and card fetches.
+pub const FIND_TIMEOUT: Duration = Duration::from_secs(20);
+/// Minimum gap between re-advertising our skills in the DHT.
+const REPROVIDE_GAP: Duration = Duration::from_secs(60);
+
+/// Ask a node for its public agent cards, optionally only those offering `skill`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardQuery {
+    #[serde(default)]
+    pub skill: Option<String>,
+}
+
+/// An in-flight `systema find`: DHT provider lookup, then card fetches.
+struct FindJob {
+    skill: String,
+    reply: Option<oneshot::Sender<ControlReply>>,
+    providers: HashSet<PeerId>,
+    dht_done: bool,
+    cards_pending: HashSet<OutboundRequestId>,
+    cards: HashMap<PeerId, Vec<AgentCard>>,
+    errors: Vec<String>,
+    deadline: Instant,
+}
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
@@ -59,6 +88,7 @@ pub struct Behaviour {
     kad: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
     a2a: A2a,
+    cards: Cards,
 }
 
 /// A request from a peer with no grant, held for the operator.
@@ -89,6 +119,11 @@ pub struct Node {
     pending_out: HashMap<OutboundRequestId, (PeerId, oneshot::Sender<ControlReply>)>,
     done_tx: mpsc::Sender<Finished>,
     done_rx: Option<mpsc::Receiver<Finished>>,
+    finds: HashMap<u64, FindJob>,
+    next_find: u64,
+    find_by_query: HashMap<kad::QueryId, u64>,
+    find_by_card: HashMap<OutboundRequestId, u64>,
+    last_provide: Option<Instant>,
 }
 
 impl Node {
@@ -121,6 +156,10 @@ impl Node {
                     [(StreamProtocol::new(A2A_PROTOCOL), ProtocolSupport::Full)],
                     request_response::Config::default().with_request_timeout(REQUEST_TIMEOUT),
                 );
+                let cards = Cards::new(
+                    [(StreamProtocol::new(CARD_PROTOCOL), ProtocolSupport::Full)],
+                    request_response::Config::default().with_request_timeout(Duration::from_secs(15)),
+                );
 
                 Ok(Behaviour {
                     relay_client,
@@ -131,10 +170,17 @@ impl Node {
                     kad,
                     gossipsub,
                     a2a,
+                    cards,
                 })
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(REQUEST_TIMEOUT))
             .build();
+        let mut swarm = swarm;
+        swarm.behaviour_mut().kad.set_mode(match cfg.dht_server {
+            DhtMode::Auto => None,
+            DhtMode::On => Some(kad::Mode::Server),
+            DhtMode::Off => Some(kad::Mode::Client),
+        });
 
         // Persisted trust state (grants made via `approve`) wins over the config file's.
         let policy: Policy = read_json(&home.join("trust.json"))?.unwrap_or_else(|| cfg.trust.clone());
@@ -153,6 +199,11 @@ impl Node {
             pending_out: HashMap::new(),
             done_tx,
             done_rx: Some(done_rx),
+            finds: HashMap::new(),
+            next_find: 0,
+            find_by_query: HashMap::new(),
+            find_by_card: HashMap::new(),
+            last_provide: None,
         })
     }
 
@@ -166,6 +217,20 @@ impl Node {
 
     pub fn listen_addrs(&self) -> Vec<String> {
         self.swarm.listeners().map(|a| a.to_string()).collect()
+    }
+
+    /// Freshly signed public cards, with current listen addresses, optionally filtered by skill.
+    fn cards_for_peers(&self, skill: Option<&str>) -> Vec<Signed<AgentCard>> {
+        let addrs = self.listen_addrs();
+        self.local_cards
+            .iter()
+            .filter(|c| skill.is_none_or(|s| c.skills.iter().any(|x| x.id == s)))
+            .filter_map(|c| {
+                let mut c = c.clone();
+                c.transports = addrs.iter().map(|a| systema_proto::Transport { kind: "libp2p".into(), address: a.clone() }).collect();
+                Signed::sign(&self.keypair, c).ok()
+            })
+            .collect()
     }
 
     /// Run until ctrl-c.
@@ -188,13 +253,14 @@ impl Node {
 
         let topic = gossipsub::IdentTopic::new(CARDS_TOPIC);
         self.swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-        self.provide_skills();
+        self.provide_skills(true);
 
         let (ctl_tx, mut ctl_rx) = mpsc::channel(16);
         control::serve(&self.home, ctl_tx)?;
         let mut done_rx = self.done_rx.take().expect("run called twice");
 
         let mut announce = tokio::time::interval(Duration::from_secs(self.cfg.announce_secs.max(5)));
+        let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
         info!(peer_id = %self.peer_id(), "systema node up");
 
         loop {
@@ -204,7 +270,8 @@ impl Node {
                     let _ = std::fs::remove_file(control::socket_path(&self.home));
                     return Ok(());
                 }
-                _ = announce.tick() => self.announce(&topic),
+                _ = announce.tick() => if self.cfg.gossip_cards { self.announce(&topic) },
+                _ = housekeeping.tick() => self.expire_finds(),
                 Some((channel, response)) = done_rx.recv() => {
                     if self.swarm.behaviour_mut().a2a.send_response(channel, response).is_err() {
                         debug!("requester went away before the reply was ready");
@@ -220,7 +287,15 @@ impl Node {
     // Discovery
     // ---------------------------------------------------------------------------------
 
-    fn provide_skills(&mut self) {
+    /// Advertise our public skills as DHT provider records. Re-run (at most once a minute)
+    /// when new peers join, since records published into an empty routing table reach nobody.
+    fn provide_skills(&mut self, startup: bool) {
+        if !startup {
+            if self.last_provide.is_some_and(|t| t.elapsed() < REPROVIDE_GAP) {
+                return;
+            }
+            self.last_provide = Some(Instant::now());
+        }
         let keys: Vec<_> = self.local_cards.iter().flat_map(|c| c.skills.iter().map(|s| AgentCard::skill_key(&s.id))).collect();
         for k in keys {
             if let Err(e) = self.swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&k)) {
@@ -479,6 +554,27 @@ impl Node {
                     Err(e) => Err(format!("signing failed: {e}")),
                 }
             }
+            Control::Find { skill } => {
+                let key = kad::RecordKey::new(&AgentCard::skill_key(&skill));
+                let qid = self.swarm.behaviour_mut().kad.get_providers(key);
+                let id = self.next_find;
+                self.next_find += 1;
+                self.find_by_query.insert(qid, id);
+                self.finds.insert(
+                    id,
+                    FindJob {
+                        skill,
+                        reply: Some(reply),
+                        providers: HashSet::new(),
+                        dht_done: false,
+                        cards_pending: HashSet::new(),
+                        cards: HashMap::new(),
+                        errors: Vec::new(),
+                        deadline: Instant::now() + FIND_TIMEOUT,
+                    },
+                );
+                return;
+            }
             Control::Inbox => Ok(json!(self.inbox)),
             Control::Approve { id, per_hour, hours } => match self.inbox.iter().position(|i| i.id == id) {
                 None => Err(format!("no inbox item {id}")),
@@ -519,6 +615,114 @@ impl Node {
             Control::Grants => Ok(json!(self.trust.policy())),
         };
         let _ = reply.send(result);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Find: DHT provider lookup + direct card fetch
+    // ---------------------------------------------------------------------------------
+
+    fn on_providers(&mut self, qid: kad::QueryId, found: Vec<PeerId>, last: bool) {
+        let Some(&id) = self.find_by_query.get(&qid) else { return };
+        let me = self.peer_id();
+        let skill = match self.finds.get(&id) {
+            Some(j) => j.skill.clone(),
+            None => return,
+        };
+        for p in found {
+            if p == me || self.trust.policy().blocked.contains(&p.to_string()) {
+                continue;
+            }
+            let Some(job) = self.finds.get_mut(&id) else { return };
+            if job.providers.insert(p) {
+                let rid = self.swarm.behaviour_mut().cards.send_request(&p, CardQuery { skill: Some(skill.clone()) });
+                self.find_by_card.insert(rid, id);
+                if let Some(job) = self.finds.get_mut(&id) {
+                    job.cards_pending.insert(rid);
+                }
+            }
+        }
+        if last {
+            self.find_by_query.remove(&qid);
+            if let Some(job) = self.finds.get_mut(&id) {
+                job.dht_done = true;
+            }
+        }
+        self.maybe_finish(id);
+    }
+
+    fn on_card_response(&mut self, peer: PeerId, rid: OutboundRequestId, cards: Result<Vec<Signed<AgentCard>>, String>) {
+        let Some(id) = self.find_by_card.remove(&rid) else { return };
+        let Some(job) = self.finds.get_mut(&id) else { return };
+        job.cards_pending.remove(&rid);
+        match cards {
+            Err(e) => job.errors.push(format!("{peer}: {e}")),
+            Ok(list) => {
+                let mut good = Vec::new();
+                for signed in list {
+                    match signed.verify_card(DEFAULT_MAX_AGE_MS) {
+                        Ok(signer) if signer == peer => {
+                            if signed.payload.skills.iter().any(|s| s.id == job.skill) {
+                                good.push(signed.payload);
+                            }
+                        }
+                        Ok(_) => job.errors.push(format!("{peer}: card signed by another peer")),
+                        Err(e) => job.errors.push(format!("{peer}: bad card: {e}")),
+                    }
+                }
+                if !good.is_empty() {
+                    job.cards.insert(peer, good.clone());
+                    let entry = self.discovered.entry(peer).or_default();
+                    for c in good {
+                        entry.retain(|x| x.name != c.name);
+                        entry.push(c);
+                    }
+                }
+            }
+        }
+        self.maybe_finish(id);
+    }
+
+    fn maybe_finish(&mut self, id: u64) {
+        let done = self.finds.get(&id).is_some_and(|j| j.dht_done && j.cards_pending.is_empty());
+        if done {
+            self.finish_find(id);
+        }
+    }
+
+    fn expire_finds(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<u64> = self.finds.iter().filter(|(_, j)| j.deadline <= now).map(|(id, _)| *id).collect();
+        for id in expired {
+            if let Some(j) = self.finds.get_mut(&id) {
+                if !j.dht_done {
+                    j.errors.push("dht lookup timed out".into());
+                }
+                if !j.cards_pending.is_empty() {
+                    j.errors.push(format!("{} card fetches timed out", j.cards_pending.len()));
+                }
+            }
+            self.finish_find(id);
+        }
+    }
+
+    fn finish_find(&mut self, id: u64) {
+        let Some(mut job) = self.finds.remove(&id) else { return };
+        self.find_by_query.retain(|_, v| *v != id);
+        self.find_by_card.retain(|_, v| *v != id);
+        let results: Vec<_> = job
+            .cards
+            .iter()
+            .map(|(p, cards)| json!({ "peer": p.to_string(), "agents": cards }))
+            .collect();
+        info!(skill = %job.skill, providers = job.providers.len(), verified = results.len(), "find finished");
+        if let Some(reply) = job.reply.take() {
+            let _ = reply.send(Ok(json!({
+                "skill": job.skill,
+                "providers": job.providers.len(),
+                "results": results,
+                "errors": job.errors,
+            })));
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -590,8 +794,47 @@ impl Node {
             SwarmEvent::Behaviour(BehaviourEvent::A2a(request_response::Event::InboundFailure { peer, error, .. })) => {
                 debug!(%peer, "inbound a2a failure: {error}")
             }
+            SwarmEvent::Behaviour(BehaviourEvent::Cards(request_response::Event::Message { peer, message, .. })) => {
+                match message {
+                    request_response::Message::Request { request, channel, .. } => {
+                        let blocked = self.trust.policy().blocked.contains(&peer.to_string());
+                        let cards: Vec<Signed<AgentCard>> = if blocked {
+                            vec![]
+                        } else {
+                            self.cards_for_peers(request.skill.as_deref())
+                        };
+                        let _ = self.swarm.behaviour_mut().cards.send_response(channel, cards);
+                    }
+                    request_response::Message::Response { request_id, response } => {
+                        self.on_card_response(peer, request_id, Ok(response))
+                    }
+                }
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Cards(request_response::Event::OutboundFailure {
+                peer, request_id, error, ..
+            })) => self.on_card_response(peer, request_id, Err(error.to_string())),
+            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
+                id,
+                result: kad::QueryResult::GetProviders(res),
+                step,
+                ..
+            })) => match res {
+                Ok(kad::GetProvidersOk::FoundProviders { providers, .. }) => {
+                    self.on_providers(id, providers.into_iter().collect(), step.last)
+                }
+                Ok(kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. }) => self.on_providers(id, vec![], true),
+                Err(e) => {
+                    debug!("get_providers: {e}");
+                    self.on_providers(id, vec![], true)
+                }
+            },
             SwarmEvent::Behaviour(BehaviourEvent::Dcutr(e)) => info!(?e, "hole punch"),
-            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::RoutingUpdated { peer, .. })) => debug!(%peer, "kad routing"),
+            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::RoutingUpdated { peer, is_new_peer, .. })) => {
+                debug!(%peer, "kad routing");
+                if is_new_peer {
+                    self.provide_skills(false);
+                }
+            }
             _ => {}
         }
     }

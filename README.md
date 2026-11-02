@@ -17,6 +17,10 @@ Scaffold, phase 1–2. Works today:
 - **Agent ↔ agent requests across nodes** (`/systema/a2a/1.0.0`): `systema send <peer> <agent> --skill <id> <text>`.
   Unknown peers land in your **approvals inbox**; approved peers get rate-limited, per-skill grants; replies are
   signed by the answering node and verified.
+- **Swarm-wide skill lookup:** `systema find <skill>` queries the Kademlia DHT for providers, fetches their signed
+  cards directly (`/systema/card/1.0.0`) and verifies them; works with mDNS and gossip off, through a bootstrap
+  node (`scripts/e2e-dht-find.sh`). Point nodes at one with `bootstrap = ["/ip4/…/tcp/…/p2p/<id>"]` and run
+  the bootstrap itself with `dht_server = "on"`.
 - `systema peers | inbox | approve | reject | block | grants`: drive the running node over a private Unix socket.
 - **Capability broker + tools.** Agents call `read_file`, `list_dir`, `write_file`, `run`, `fetch_url`; the kernel
   checks each call against the agent's manifest, executes it on the agent's behalf and audits it. Credentials,
@@ -42,7 +46,7 @@ Scaffold, phase 1–2. Works today:
   outbound = false
   ```
 
-Not yet: microVM sandbox for public agents, memory, DHT skill lookup across the internet, task boards,
+Not yet: microVM sandbox for public agents, memory, a real cross-NAT test via a public bootstrap/relay, task boards,
 HTTP A2A gateway, reputation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
 
 ## Quick start

@@ -35,6 +35,8 @@ enum Cmd {
     Node,
     /// List agents discovered on other nodes (needs a running node).
     Peers,
+    /// Find agents offering a skill anywhere in the swarm (DHT lookup, then signed card fetch).
+    Find { skill: String },
     /// Ask an agent on another node to use one of its skills.
     Send {
         /// Peer id of the remote node (see `systema peers`).
@@ -172,6 +174,19 @@ async fn main() -> anyhow::Result<()> {
                     let skills: Vec<_> = a["skills"].as_array().into_iter().flatten().filter_map(|s| s["id"].as_str()).collect();
                     println!("{}  {:<10} skills={:?}  {}", p["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), skills, a["description"].as_str().unwrap_or(""));
                 }
+            }
+        }
+        Cmd::Find { skill } => {
+            let v = control(&home, Control::Find { skill }).await?;
+            let results = v["results"].as_array().cloned().unwrap_or_default();
+            println!("{} provider(s) in the DHT for `{}`, {} with verified cards", v["providers"], v["skill"].as_str().unwrap_or(""), results.len());
+            for r in results {
+                for a in r["agents"].as_array().into_iter().flatten() {
+                    println!("{}  {:<10} {}", r["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), a["description"].as_str().unwrap_or(""));
+                }
+            }
+            for e in v["errors"].as_array().into_iter().flatten() {
+                eprintln!("  note: {}", e.as_str().unwrap_or(""));
             }
         }
         Cmd::Send { peer, agent, skill, text } => {

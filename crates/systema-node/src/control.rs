@@ -16,6 +16,8 @@ pub enum Control {
     Peers,
     /// Send a request to `agent` on `peer`, invoking `skill`.
     Send { peer: String, agent: String, skill: String, text: String },
+    /// Look up agents offering `skill` across the swarm (DHT providers + direct card fetch).
+    Find { skill: String },
     /// Requests from unknown peers waiting for approval.
     Inbox,
     /// Approve an inbox item: grant its peer its skill.
