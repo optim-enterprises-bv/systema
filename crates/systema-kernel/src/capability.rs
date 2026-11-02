@@ -63,10 +63,16 @@ pub enum ToolRequest {
     ReadFile { path: String },
     ListDir { path: String },
     WriteFile { path: String, content: String },
+    /// In-place edit: replace the single occurrence of `old` with `new` in an existing file.
+    Patch { path: String, old: String, new: String },
+    /// Recursively search a directory for a substring in file names and text contents.
+    SearchFiles { path: String, query: String },
     Run { program: String, args: Vec<String> },
     /// A full shell command (`bash -lc`), for trusted local agents only. Real operator shell.
     Shell { command: String },
     Fetch { url: String },
+    /// The agent's own persistent key/value memory (stored in its workspace).
+    Memory { action: String, key: String, value: String },
     /// A `tools/call` on an operator-configured MCP server. `arguments` is the model's JSON.
     Mcp { server: String, tool: String, arguments: String },
 }
@@ -77,9 +83,12 @@ impl ToolRequest {
             ToolRequest::ReadFile { .. } => "read_file",
             ToolRequest::ListDir { .. } => "list_dir",
             ToolRequest::WriteFile { .. } => "write_file",
+            ToolRequest::Patch { .. } => "patch",
+            ToolRequest::SearchFiles { .. } => "search_files",
             ToolRequest::Run { .. } => "run",
             ToolRequest::Shell { .. } => "shell",
             ToolRequest::Fetch { .. } => "fetch_url",
+            ToolRequest::Memory { .. } => "memory",
             ToolRequest::Mcp { .. } => "mcp",
         }
     }
@@ -90,9 +99,12 @@ impl ToolRequest {
             ToolRequest::ReadFile { path } => format!("read_file {path}"),
             ToolRequest::ListDir { path } => format!("list_dir {path}"),
             ToolRequest::WriteFile { path, content } => format!("write_file {path} ({} bytes)", content.len()),
+            ToolRequest::Patch { path, .. } => format!("patch {path}"),
+            ToolRequest::SearchFiles { path, query } => format!("search_files {path} for {:?}", query.chars().take(60).collect::<String>()),
             ToolRequest::Run { program, args } => format!("run {program} {}", args.join(" ")),
             ToolRequest::Shell { command } => format!("shell {}", command.replace('\n', " ")),
             ToolRequest::Fetch { url } => format!("fetch_url {url}"),
+            ToolRequest::Memory { action, key, .. } => format!("memory {action} {key}").trim_end().to_string(),
             ToolRequest::Mcp { server, tool, arguments } => {
                 let a: String = arguments.chars().take(120).collect();
                 format!("mcp {server}.{tool} {a}")
@@ -116,6 +128,8 @@ pub enum Target {
     Url(String),
     Shell(String),
     Mcp,
+    /// The agent's own memory store, resolved inside its workspace at execute time.
+    Memory,
     None,
 }
 
@@ -251,7 +265,7 @@ impl Broker {
                     return Checked::deny(format!("{} is outside this agent's fs_read", p.display()));
                 }
             }
-            ToolRequest::WriteFile { path, .. } => {
+            ToolRequest::WriteFile { path, .. } | ToolRequest::Patch { path, .. } => {
                 let p = match self.resolve_for_write(agent, path) {
                     Ok(p) => p,
                     Err(e) => return Checked::deny(e),
@@ -267,6 +281,28 @@ impl Broker {
                 } else {
                     return Checked::deny(format!("{} is outside this agent's fs_write", p.display()));
                 }
+            }
+            ToolRequest::SearchFiles { path, .. } => {
+                let p = match self.resolve_existing(agent, path) {
+                    Ok(p) => p,
+                    Err(e) => return Checked::deny(e),
+                };
+                if self.is_protected(agent, &p) {
+                    return Checked::deny(protected_msg(&p));
+                }
+                if p.starts_with(&ws) {
+                    (GrantMode::Allow, NONE, Target::Path(p))
+                } else if self.under_any(agent, &p, &caps.fs_read) || self.under_any(agent, &p, &caps.fs_write) {
+                    (GrantMode::Allow, PRIVATE, Target::Path(p))
+                } else {
+                    return Checked::deny(format!("{} is outside this agent's fs_read", p.display()));
+                }
+            }
+            ToolRequest::Memory { action, .. } => {
+                // The agent's own scratchpad, inside its workspace: always allowed. Reading a
+                // value back may reintroduce private data, so `get` carries the private leg.
+                let legs = if action == "get" { PRIVATE } else { NONE };
+                (GrantMode::Allow, legs, Target::Memory)
             }
             ToolRequest::Run { program, args } => {
                 if program.contains('/') {

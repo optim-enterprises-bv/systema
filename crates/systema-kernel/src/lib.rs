@@ -21,7 +21,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use systema_proto::{AgentCard, PROTOCOL_VERSION, Transport, now_ms};
 use tokio::sync::{Mutex, broadcast};
-use tokio_util::sync::CancellationToken;
+pub use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub use approvals::{Answer, ApprovalStore, Approver, DenyAll};
@@ -59,6 +59,9 @@ pub struct Kernel {
     events: broadcast::Sender<Event>,
     /// Operator guidance queued per session, drained at the top of each loop iteration.
     steer: Mutex<HashMap<String, Vec<String>>>,
+    /// Set true for a session when the current turn hit a manifest-ceiling denial (the agent
+    /// lacks a capability operator has), so an orchestrated turn can hand off to operator.
+    turn_walls: Mutex<HashMap<String, bool>>,
     agents: HashMap<String, AgentManifest>,
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
@@ -86,6 +89,7 @@ impl Kernel {
             approvals: Arc::new(ApprovalStore::load(&config.home)),
             events,
             steer: Mutex::new(HashMap::new()),
+            turn_walls: Mutex::new(HashMap::new()),
             bus: Bus::default(),
             agents,
             sessions: Mutex::new(HashMap::new()),
@@ -136,6 +140,65 @@ impl Kernel {
     /// One turn with an agent in the operator's own session.
     pub async fn ask(&self, agent: &str, prompt: &str, approver: &dyn Approver) -> anyhow::Result<String> {
         self.ask_in(agent, agent, prompt, None, TrustState::operator(), approver, &CancellationToken::new()).await
+    }
+
+    /// Run a turn, and if a *specialist* hits its capability ceiling (a denial operator would
+    /// not hit), transparently hand the same request to `operator` and return its answer.
+    /// Only ever used for operator-initiated (local) turns — a remote/untrusted session must
+    /// never be able to trigger an operator turn, so the handoff is gated on `!trust.untrusted`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ask_with_fallback(
+        &self,
+        agent: &str,
+        session_key: &str,
+        prompt: &str,
+        priority: Option<Priority>,
+        initial_trust: TrustState,
+        approver: &dyn Approver,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<String> {
+        let answer = self.ask_in(agent, session_key, prompt, priority, initial_trust, approver, cancel).await?;
+        let operator = "operator";
+        if agent != operator && !initial_trust.untrusted && self.took_capability_wall(session_key).await {
+            if self.agent(operator).is_some() {
+                self.emit(
+                    Some(agent),
+                    Some(session_key),
+                    EventKind::Note {
+                        text: format!("{agent} lacks the access this needs — handing off to {operator}"),
+                    },
+                );
+                return self
+                    .ask_in(operator, operator, prompt, priority, TrustState::operator(), approver, cancel)
+                    .await;
+            }
+        }
+        Ok(answer)
+    }
+
+    /// Whether the last turn in `session_key` hit a manifest-ceiling (capability) denial.
+    async fn took_capability_wall(&self, session_key: &str) -> bool {
+        self.turn_walls.lock().await.get(session_key).copied().unwrap_or(false)
+    }
+
+    /// Record that this session's current turn hit a capability wall (set in the broker).
+    async fn mark_capability_wall(&self, session_key: &str) {
+        self.turn_walls.lock().await.insert(session_key.to_string(), true);
+    }
+
+    /// True when a denial reason is a manifest-ceiling (capability) limit — something a
+    /// broader-capability agent like operator could satisfy — rather than a hard-protected
+    /// path, a missing file, or a malformed request.
+    fn is_capability_wall(reason: &str) -> bool {
+        const MARKERS: &[&str] = &[
+            "outside this agent's fs_",
+            "no exec grant covers",
+            "has no shell capability",
+            "not available to swarm-facing",
+            "has no network capability",
+            "may not use mcp server",
+        ];
+        MARKERS.iter().any(|m| reason.contains(m))
     }
 
     /// Pick the agent best suited to a request (the orchestrator). Falls back to `operator`,
@@ -221,6 +284,8 @@ impl Kernel {
         };
         let mut session = session.lock().await;
         let checkpoint = session.clone();
+        // Fresh turn: clear any capability-wall mark left by a previous turn in this session.
+        self.turn_walls.lock().await.remove(session_key);
         session.push_user(prompt);
         self.emit(Some(agent), Some(session_key), EventKind::TurnStarted { prompt: prompt.to_string() });
         match self.run_loop(m, session_key, &mut session, priority.unwrap_or(m.priority), approver, cancel).await {
@@ -318,7 +383,14 @@ impl Kernel {
         let checked = self.broker.check(m, &session.trust, &req);
         let (run, outcome) = match &checked.decision {
             Decision::Allow => (true, "allowed".to_string()),
-            Decision::Deny(r) => (false, format!("denied: {r}")),
+            Decision::Deny(r) => {
+                // A manifest-ceiling denial in a trusted (local) session marks the session so
+                // an orchestrated turn can hand off to operator, who has broader capabilities.
+                if !session.trust.untrusted && Self::is_capability_wall(r) {
+                    self.mark_capability_wall(session_key).await;
+                }
+                (false, format!("denied: {r}"))
+            }
             Decision::Ask { reason, rememberable } => {
                 let key = approvals::rule_key(&req, &checked);
                 let rememberable = *rememberable && key.is_some();

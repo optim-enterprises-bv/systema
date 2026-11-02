@@ -48,9 +48,17 @@ Systema applies it in the kernel:
   outbound (the reply goes to the stranger), so a stranger can never get your private data back through an
   agent without you approving it.
 - **Workspaces.** Each agent has `~/.systema/workspaces/<agent>/`, always readable and writable, not private.
+- **File tools.** `read_file`, `list_dir`, `write_file`, `patch` (in-place edit of a unique snippet) and
+  `search_files` (recursive substring search of names and text contents, skipping hidden files) all go through
+  the broker's path checks: canonicalized, confined to the manifest's `fs_read`/`fs_write`, never into a
+  hard-denied path. `search_files` skips dot-entries, so credential dirs are never walked.
+- **Agent memory.** `memory` (set/get/list/delete) is each agent's own persistent key/value store, kept in its
+  workspace (`memory.json`) and surviving restarts. `get` carries the *private* leg, since recalling a value can
+  reintroduce private data into the context.
 - **Execution without a shell.** `run` executes one program with an argument vector (no shell), with a scrubbed
   environment (no credentials), cwd set to the workspace, a timeout and an output cap. Each manifest
-  `exec` grant names a program and an argument prefix, with mode `allow` or `ask`.
+  `exec` grant names a program and an argument prefix, with mode `allow` or `ask`. A trusted (non-public) agent
+  may also have `shell` for a full `bash -lc` in the user's home — never offered to swarm-facing agents.
 - **Fetch guards.** http(s) only; loopback, private, link-local and CGNAT addresses are refused, so a fetch can't
   reach titan-engine, the control socket's neighbours or your LAN.
 
@@ -65,6 +73,12 @@ This is session-level taint, a conservative approximation of **CaMeL** (Google D
 Injections by Design*): CaMeL tracks provenance per value through a planner/interpreter split (a hardened
 **dual-LLM pattern**), so it can allow more without risk. The planned step there is a quarantined reader whose
 output reaches privileged agents only as opaque references.
+
+**Orchestration.** `systema do "<request>"` (and the cockpit's *ask OS*) routes a request to the best agent.
+The router defaults to the general-purpose `operator` and picks a narrow specialist only on a clear domain
+match. If a specialist is chosen but hits its capability ceiling (a denial `operator` would not hit), the turn
+is **handed off to `operator`** automatically, so a local request still completes. The handoff is gated to
+operator-initiated sessions — a remote/untrusted session can never trigger an operator turn.
 
 **Sandboxing** (microVM via libkrun) is reserved for code that processes strangers' input: public agents and
 programs they write and run. Operator-only agents get host access through the broker.
@@ -102,7 +116,7 @@ new session seeded with a summary, never an in-place rewrite.
 
 1. ~~Kernel MVP: scheduler, sessions, bus, CLI~~ · ~~Node: identity, transports, mDNS, DHT, card gossip~~
 2. ~~Capability broker, tool-calling agent loop, per-session taint (Rule of Two), MCP servers behind the broker~~;
-   libkrun microVMs for public agents (and optionally MCP servers); persistent "always allow" approvals; memory store; quarantined reader with opaque references (CaMeL-style).
+   libkrun microVMs for public agents (and optionally MCP servers); quarantined reader with opaque references (CaMeL-style). (Persistent "always allow" approvals and a per-agent memory store are done.)
 3. ~~Direct agent↔agent requests over libp2p request-response, through the trust gate; approvals inbox (CLI)~~;
    TUI inbox with live notifications.
 4. ~~`systema find <skill>`: DHT provider lookup + direct signed-card fetch; relay server mode, relay

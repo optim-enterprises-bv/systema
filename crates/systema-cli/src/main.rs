@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use systema_kernel::{Config, Kernel, config::home_dir};
+use systema_kernel::{CancellationToken, Config, Kernel, TrustState, config::home_dir};
 use systema_node::control::Control;
 use systema_proto::{Signed, libp2p_identity::Keypair};
 
@@ -185,14 +185,21 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Ask { agent, prompt } => {
             let k = Kernel::new(Config::load(&home)?)?;
-            println!("{}", k.ask(&agent, &prompt.join(" "), &TerminalApprover).await?);
+            let answer = k
+                .ask_with_fallback(&agent, &agent, &prompt.join(" "), None, TrustState::operator(), &TerminalApprover, &CancellationToken::new())
+                .await?;
+            println!("{answer}");
         }
         Cmd::Do { prompt } => {
             let k = Kernel::new(Config::load(&home)?)?;
             let prompt = prompt.join(" ");
             let agent = k.route(&prompt).await?;
             eprintln!("[routed to {agent}]");
-            println!("{}", k.ask(&agent, &prompt, &TerminalApprover).await?);
+            // ask_with_fallback hands off to operator if the routed specialist lacks access.
+            let answer = k
+                .ask_with_fallback(&agent, &agent, &prompt, None, TrustState::operator(), &TerminalApprover, &CancellationToken::new())
+                .await?;
+            println!("{answer}");
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;
