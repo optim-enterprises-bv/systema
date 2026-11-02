@@ -147,21 +147,36 @@ impl Kernel {
             [one] => return Ok(one.name.clone()),
             _ => {}
         }
+        // The general-purpose agent is the default and the safe fallback: it has the broadest
+        // capabilities, so a mis-route to it still works, while a mis-route to a narrow
+        // specialist fails (as happened with "files in ~/Downloads" landing on `coder`).
+        let default = self
+            .agent("operator")
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| agents[0].name.clone());
         let menu = agents
             .iter()
             .map(|m| {
                 let skills: Vec<_> = m.skills.iter().map(|s| s.id.as_str()).collect();
-                if skills.is_empty() {
-                    format!("- {}: {}", m.name, m.description)
+                let tag = if m.name == default { " (DEFAULT, general-purpose)" } else { "" };
+                let line = if skills.is_empty() {
+                    format!("- {}{}: {}", m.name, tag, m.description)
                 } else {
-                    format!("- {}: {} [skills: {}]", m.name, m.description, skills.join(", "))
-                }
+                    format!("- {}{}: {} [skills: {}]", m.name, tag, m.description, skills.join(", "))
+                };
+                line
             })
             .collect::<Vec<_>>()
             .join("\n");
         let sys = format!(
-            "You are the request router for this machine. Choose the single best agent to handle the \
-             user's request. Available agents:\n{menu}\n\nReply with ONLY the exact agent name, nothing else."
+            "You route a user's request to one agent on this machine. Available agents:\n{menu}\n\n\
+             Rules:\n\
+             - Default to `{default}`. It is the general-purpose agent and can read files, run \
+             commands and answer anything.\n\
+             - Choose a specialist ONLY when the request is squarely and solely within its narrow \
+             domain. A specialist has limited access and will fail on anything outside it.\n\
+             - When in any doubt, choose `{default}`.\n\n\
+             Reply with ONLY the exact agent name, nothing else."
         );
         let messages = vec![ChatMessage::text("system", sys), ChatMessage::text("user", prompt)];
         let reply = {
@@ -169,13 +184,14 @@ impl Kernel {
             self.inference.chat(ModelTier::Fast, &messages).await?
         };
         let pick = reply.trim().to_lowercase();
+        // Only honour an exact name match; anything fuzzy or unrecognised falls back to the
+        // general-purpose default rather than guessing a specialist.
         let chosen = agents
             .iter()
             .find(|m| pick == m.name.to_lowercase())
-            .or_else(|| agents.iter().find(|m| pick.contains(&m.name.to_lowercase())))
+            .or_else(|| agents.iter().find(|m| pick.split(|c: char| !c.is_alphanumeric()).any(|w| w == m.name.to_lowercase())))
             .map(|m| m.name.clone())
-            .or_else(|| self.agent("operator").map(|m| m.name.clone()))
-            .unwrap_or_else(|| agents[0].name.clone());
+            .unwrap_or(default);
         Ok(chosen)
     }
 
