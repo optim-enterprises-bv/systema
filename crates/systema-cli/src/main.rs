@@ -183,6 +183,9 @@ async fn main() -> anyhow::Result<()> {
             for r in results {
                 for a in r["agents"].as_array().into_iter().flatten() {
                     println!("{}  {:<10} {}", r["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), a["description"].as_str().unwrap_or(""));
+                    for t in a["transports"].as_array().into_iter().flatten() {
+                        println!("    via {}", t["address"].as_str().unwrap_or("?"));
+                    }
                 }
             }
             for e in v["errors"].as_array().into_iter().flatten() {

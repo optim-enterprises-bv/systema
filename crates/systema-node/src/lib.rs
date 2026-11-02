@@ -66,6 +66,18 @@ pub struct CardQuery {
     pub skill: Option<String>,
 }
 
+/// A relay we want a reservation on. The reservation is requested only once a connection
+/// to the relay exists (asking while a dial is in flight makes the relay client's own dial
+/// fail and the listener close), and re-requested if it lapses.
+struct RelayState {
+    peer: PeerId,
+    addr: Multiaddr,
+    listener: Option<libp2p::core::transport::ListenerId>,
+    last_attempt: Option<Instant>,
+}
+
+const RELAY_RETRY: Duration = Duration::from_secs(30);
+
 /// An in-flight `systema find`: DHT provider lookup, then card fetches.
 struct FindJob {
     skill: String,
@@ -81,6 +93,7 @@ struct FindJob {
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
     relay_client: relay::client::Behaviour,
+    relay_server: Toggle<relay::Behaviour>,
     dcutr: dcutr::Behaviour,
     identify: identify::Behaviour,
     ping: ping::Behaviour,
@@ -124,11 +137,14 @@ pub struct Node {
     find_by_query: HashMap<kad::QueryId, u64>,
     find_by_card: HashMap<OutboundRequestId, u64>,
     last_provide: Option<Instant>,
+    relays: Vec<RelayState>,
 }
 
 impl Node {
     pub fn new(keypair: Keypair, cfg: NodeConfig, kernel: Arc<Kernel>, home: PathBuf) -> anyhow::Result<Self> {
         let mdns_on = cfg.mdns;
+        let relay_server_on = cfg.relay_server;
+        let limits = cfg.relay_limits.clone();
         let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
             .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
@@ -161,8 +177,23 @@ impl Node {
                     request_response::Config::default().with_request_timeout(Duration::from_secs(15)),
                 );
 
+                let relay_server = relay_server_on.then(|| {
+                    relay::Behaviour::new(
+                        peer_id,
+                        relay::Config {
+                            max_reservations: limits.max_reservations,
+                            max_circuits: limits.max_circuits,
+                            max_circuits_per_peer: limits.max_circuits_per_peer,
+                            max_circuit_duration: Duration::from_secs(limits.max_circuit_secs),
+                            max_circuit_bytes: limits.max_circuit_bytes,
+                            ..Default::default()
+                        },
+                    )
+                });
+
                 Ok(Behaviour {
                     relay_client,
+                    relay_server: Toggle::from(relay_server),
                     dcutr: dcutr::Behaviour::new(peer_id),
                     identify: identify::Behaviour::new(identify::Config::new(IDENTIFY_PROTOCOL.into(), key.public())),
                     ping: ping::Behaviour::default(),
@@ -204,6 +235,7 @@ impl Node {
             find_by_query: HashMap::new(),
             find_by_card: HashMap::new(),
             last_provide: None,
+            relays: Vec::new(),
         })
     }
 
@@ -238,6 +270,22 @@ impl Node {
         for l in &self.cfg.listen {
             self.swarm.listen_on(l.parse().with_context(|| format!("bad listen addr {l}"))?)?;
         }
+        for e in &self.cfg.external_addrs {
+            let addr: Multiaddr = e.parse().with_context(|| format!("bad external addr {e}"))?;
+            self.swarm.add_external_address(addr);
+        }
+        for r in &self.cfg.relays {
+            let addr: Multiaddr = r.parse().with_context(|| format!("bad relay addr {r}"))?;
+            let Some(libp2p::multiaddr::Protocol::P2p(relay_peer)) = addr.iter().last() else {
+                anyhow::bail!("relay addr {r} must end in /p2p/<peer id>");
+            };
+            self.swarm.behaviour_mut().kad.add_address(&relay_peer, addr.clone());
+            self.relays.push(RelayState { peer: relay_peer, addr, listener: None, last_attempt: None });
+        }
+        self.tend_relays();
+        if self.cfg.relay_server {
+            info!("acting as a circuit relay for other nodes");
+        }
         for b in &self.cfg.bootstrap {
             let addr: Multiaddr = b.parse().with_context(|| format!("bad bootstrap addr {b}"))?;
             if let Some(libp2p::multiaddr::Protocol::P2p(peer)) = addr.iter().last() {
@@ -271,7 +319,7 @@ impl Node {
                     return Ok(());
                 }
                 _ = announce.tick() => if self.cfg.gossip_cards { self.announce(&topic) },
-                _ = housekeeping.tick() => self.expire_finds(),
+                _ = housekeeping.tick() => { self.expire_finds(); self.tend_relays(); }
                 Some((channel, response)) = done_rx.recv() => {
                     if self.swarm.behaviour_mut().a2a.send_response(channel, response).is_err() {
                         debug!("requester went away before the reply was ready");
@@ -289,6 +337,27 @@ impl Node {
 
     /// Advertise our public skills as DHT provider records. Re-run (at most once a minute)
     /// when new peers join, since records published into an empty routing table reach nobody.
+    /// Keep a reservation on every configured relay: dial when disconnected, reserve
+    /// when connected without one, at most every RELAY_RETRY per relay.
+    fn tend_relays(&mut self) {
+        for i in 0..self.relays.len() {
+            let r = &self.relays[i];
+            if r.listener.is_some() || r.last_attempt.is_some_and(|t| t.elapsed() < RELAY_RETRY) {
+                continue;
+            }
+            let (peer, addr) = (r.peer, r.addr.clone());
+            self.relays[i].last_attempt = Some(Instant::now());
+            if self.swarm.is_connected(&peer) {
+                match self.swarm.listen_on(addr.clone().with(libp2p::multiaddr::Protocol::P2pCircuit)) {
+                    Ok(id) => self.relays[i].listener = Some(id),
+                    Err(e) => warn!(relay = %peer, "relay listen: {e}"),
+                }
+            } else if let Err(e) = self.swarm.dial(addr) {
+                debug!(relay = %peer, "relay dial: {e}");
+            }
+        }
+    }
+
     fn provide_skills(&mut self, startup: bool) {
         if !startup {
             if self.last_provide.is_some_and(|t| t.elapsed() < REPROVIDE_GAP) {
@@ -751,11 +820,57 @@ impl Node {
 
     fn handle(&mut self, ev: SwarmEvent<BehaviourEvent>) {
         match ev {
-            SwarmEvent::NewListenAddr { address, .. } => info!("listening on {address}/p2p/{}", self.peer_id()),
+            SwarmEvent::NewListenAddr { address, .. } => {
+                let relayed = address.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit));
+                if relayed {
+                    // An accepted reservation is a confirmed way to reach us: advertise it
+                    // (in DHT provider records and cards) like any external address.
+                    info!("reachable via relay at {address}");
+                    self.swarm.add_external_address(address);
+                    // Provider records carry the addresses known when they were published. A
+                    // record without addresses from a DHT client is dropped from answers (the
+                    // serving node can't fill them in from its routing table), so re-advertise
+                    // now that we can be reached.
+                    self.last_provide = None;
+                    self.provide_skills(false);
+                } else {
+                    info!("listening on {address}/p2p/{}", self.peer_id());
+                }
+            }
+            SwarmEvent::ExternalAddrConfirmed { address } => {
+                info!("external address confirmed: {address}");
+                self.last_provide = None;
+                self.provide_skills(false);
+            }
+            SwarmEvent::ListenerClosed { listener_id, reason, .. } => {
+                if let Some(r) = self.relays.iter_mut().find(|r| r.listener == Some(listener_id)) {
+                    warn!(relay = %r.peer, ?reason, "relay reservation lost; will retry");
+                    r.listener = None;
+                }
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::RelayServer(e)) => match e {
+                relay::Event::ReservationReqAccepted { src_peer_id, .. } => info!(peer = %src_peer_id, "relay: reservation accepted"),
+                relay::Event::CircuitReqAccepted { src_peer_id, dst_peer_id } => {
+                    info!(src = %src_peer_id, dst = %dst_peer_id, "relay: circuit opened")
+                }
+                relay::Event::CircuitClosed { src_peer_id, dst_peer_id, error } => {
+                    debug!(src = %src_peer_id, dst = %dst_peer_id, ?error, "relay: circuit closed")
+                }
+                other => debug!(?other, "relay server"),
+            },
+            SwarmEvent::Behaviour(BehaviourEvent::RelayClient(e)) => match e {
+                relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => {
+                    info!(relay = %relay_peer_id, "relay: reservation granted")
+                }
+                other => debug!(?other, "relay client"),
+            },
             SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                 if self.trust.policy().blocked.contains(&peer_id.to_string()) {
                     let _ = self.swarm.disconnect_peer_id(peer_id);
                     return;
+                }
+                if let Some(r) = self.relays.iter_mut().find(|r| r.peer == peer_id && r.listener.is_none()) {
+                    r.last_attempt = None; // reserve on the next tick, now that we're connected
                 }
                 debug!(%peer_id, addr = %endpoint.get_remote_address(), "connected")
             }
@@ -827,6 +942,13 @@ impl Node {
                     debug!("get_providers: {e}");
                     self.on_providers(id, vec![], true)
                 }
+            },
+            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
+                result: kad::QueryResult::StartProviding(res),
+                ..
+            })) => match res {
+                Ok(ok) => debug!(key = ?String::from_utf8_lossy(ok.key.as_ref()), "skill advertised in the DHT"),
+                Err(e) => debug!("advertising skill failed: {e}"),
             },
             SwarmEvent::Behaviour(BehaviourEvent::Dcutr(e)) => info!(?e, "hole punch"),
             SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::RoutingUpdated { peer, is_new_peer, .. })) => {

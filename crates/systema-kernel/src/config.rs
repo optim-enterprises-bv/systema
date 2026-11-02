@@ -50,7 +50,33 @@ pub struct NodeConfig {
     /// Serve the DHT for others. `auto` = only once an external address is confirmed;
     /// `on` for public or LAN nodes (bootstrap nodes must be `on`); `off` for client-only.
     pub dht_server: DhtMode,
+    /// Relays to reserve a slot on (multiaddrs ending in `/p2p/<id>`), for nodes behind NAT:
+    /// the node becomes reachable at `<relay>/p2p-circuit/p2p/<self>`.
+    pub relays: Vec<String>,
+    /// Addresses this node is known to be reachable at (e.g. a VPS's public IP); advertised as-is.
+    pub external_addrs: Vec<String>,
+    /// Act as a circuit relay for other nodes (public nodes only).
+    pub relay_server: bool,
+    pub relay_limits: RelayLimits,
     pub trust: Policy,
+}
+
+/// What a relay server donates. libp2p's defaults (2 min, 128 KiB) only cover hole-punch
+/// coordination; agent requests can wait minutes for a shared GPU.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelayLimits {
+    pub max_reservations: usize,
+    pub max_circuits: usize,
+    pub max_circuits_per_peer: usize,
+    pub max_circuit_secs: u64,
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self { max_reservations: 128, max_circuits: 32, max_circuits_per_peer: 4, max_circuit_secs: 900, max_circuit_bytes: 4 << 20 }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -97,6 +123,10 @@ impl Default for NodeConfig {
             announce_secs: 60,
             gossip_cards: true,
             dht_server: DhtMode::Auto,
+            relays: vec![],
+            external_addrs: vec![],
+            relay_server: false,
+            relay_limits: RelayLimits::default(),
             trust: Policy::default(),
         }
     }

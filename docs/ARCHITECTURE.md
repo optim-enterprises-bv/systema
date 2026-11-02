@@ -105,8 +105,9 @@ new session seeded with a summary, never an in-place rewrite.
    libkrun microVMs for public agents (and optionally MCP servers); persistent "always allow" approvals; memory store; quarantined reader with opaque references (CaMeL-style).
 3. ~~Direct agent↔agent requests over libp2p request-response, through the trust gate; approvals inbox (CLI)~~;
    TUI inbox with live notifications.
-4. ~~`systema find <skill>`: DHT provider lookup + direct signed-card fetch~~; public bootstrap/relay node
-   (relay server mode); NAT/hole-punch test across real networks.
+4. ~~`systema find <skill>`: DHT provider lookup + direct signed-card fetch; relay server mode, relay
+   reservations for NAT'd nodes, relayed addresses in DHT records~~; deploy a real public bootstrap/relay and
+   test NAT traversal and DCUtR hole punching across real networks (loopback tests can't exercise hole punching).
 5. Swarm task boards on gossip: post → bid → assign → result → verify.
 6. Reputation (local history + vouches + gossipsub peer scoring), proof-of-work join cost, HTTP A2A gateway.
 7. Harness self-improvement (cf. Google Research Harness², Oct 2026): propose prompt/skill/tool-guidance edits

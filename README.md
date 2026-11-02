@@ -21,7 +21,28 @@ Scaffold, phase 1–2. Works today:
   cards directly (`/systema/card/1.0.0`) and verifies them; works with mDNS and gossip off, through a bootstrap
   node (`scripts/e2e-dht-find.sh`). Point nodes at one with `bootstrap = ["/ip4/…/tcp/…/p2p/<id>"]` and run
   the bootstrap itself with `dht_server = "on"`.
+- **Relays for nodes behind NAT.** A public node can act as bootstrap + circuit relay; a node behind NAT reserves a
+  slot on it and is advertised (DHT records and cards) at its `…/p2p-circuit/p2p/<id>` address, so others can reach
+  it without port forwarding (`scripts/e2e-relay.sh`). Reservations are kept alive and re-requested if they lapse.
 - `systema peers | inbox | approve | reject | block | grants`: drive the running node over a private Unix socket.
+
+### Running a public bootstrap + relay (e.g. a small VPS)
+
+```toml
+[node]
+listen = ["/ip4/0.0.0.0/tcp/4001", "/ip4/0.0.0.0/udp/4001/quic-v1"]
+external_addrs = ["/ip4/<public-ip>/tcp/4001", "/ip4/<public-ip>/udp/4001/quic-v1"]
+dht_server = "on"
+relay_server = true
+
+[node.relay_limits]          # what you donate to others
+max_circuits = 32
+max_circuit_secs = 900       # agent requests can wait minutes for a GPU
+max_circuit_bytes = 4194304
+```
+
+On nodes behind NAT: `bootstrap = ["/ip4/<public-ip>/tcp/4001/p2p/<relay-id>"]`, `relays = [same]`,
+`dht_server = "off"`. Get the id with `systema id` on the relay.
 - **Capability broker + tools.** Agents call `read_file`, `list_dir`, `write_file`, `run`, `fetch_url`; the kernel
   checks each call against the agent's manifest, executes it on the agent's behalf and audits it. Credentials,
   Systema's own state and `/proc` are hard-denied; each agent has a free workspace.
