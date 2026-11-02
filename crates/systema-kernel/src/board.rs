@@ -68,6 +68,12 @@ pub fn is_tainted(posts: &[Post]) -> bool {
     posts.iter().any(|p| p.public || p.tainted)
 }
 
+/// Timestamp of the most recent post (optionally on one topic), or 0 if none. Used by the
+/// scheduler to fire a job when a new message appears on a watched topic.
+pub fn latest_ts(home: &Path, topic: Option<&str>) -> u64 {
+    read(home, topic, 1).first().map(|p| p.ts).unwrap_or(0)
+}
+
 /// Human-readable rendering of posts for the model.
 pub fn render(posts: &[Post]) -> String {
     if posts.is_empty() {

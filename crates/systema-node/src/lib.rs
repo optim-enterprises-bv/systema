@@ -880,7 +880,7 @@ impl Node {
             return;
         }
         let now = systema_proto::now_ms();
-        let due = systema_kernel::schedule::fire_due(&jobs, &mut self.sched_state, now);
+        let due = systema_kernel::schedule::check(&jobs, &mut self.sched_state, &self.home, now);
         systema_kernel::schedule::save_state(&self.home, &self.sched_state);
         for job in due {
             let session = format!("sched:{}", job.name);
