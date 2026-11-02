@@ -258,6 +258,113 @@ impl Kernel {
         Ok(chosen)
     }
 
+    /// Self-improvement (operator-run only): digest the audit log, have the capability-less
+    /// `improver` agent draft proposals, and persist them under `proposals/` for the operator
+    /// to review and apply by hand. The improver has no host access, and nothing here changes
+    /// any manifest, grant or exec rule — those all live in the hard-denied Systema home.
+    /// Returns the proposal file's path.
+    pub async fn propose_improvements(&self, approver: &dyn Approver) -> anyhow::Result<PathBuf> {
+        self.agent("improver").context("no `improver` agent is configured")?;
+        let digest = self.audit_digest(4000);
+        let prompt = format!(
+            "Here is a digest of recent tool activity on this machine. Propose specific, \
+             operator-reviewable improvements, following your rules. If the evidence is thin, say so.\n\n{digest}"
+        );
+        let proposal = self
+            .ask_in(
+                "improver",
+                "improver",
+                &prompt,
+                Some(Priority::Background),
+                TrustState::operator(),
+                approver,
+                &CancellationToken::new(),
+            )
+            .await?;
+        let dir = self.config.home.join("proposals");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.md", now_ms()));
+        let doc = format!(
+            "# Systema improvement proposals\n\nGenerated {} from the audit log. These are \
+             suggestions only — review and apply by hand; nothing was changed automatically.\n\n\
+             ---\n\n{proposal}\n",
+            now_ms()
+        );
+        std::fs::write(&path, doc)?;
+        Ok(path)
+    }
+
+    /// A compact, bounded summary of the last `max_lines` audit entries: counts of tool use,
+    /// denials grouped by reason, and approvals — the evidence the improver reasons over.
+    fn audit_digest(&self, max_lines: usize) -> String {
+        use std::collections::BTreeMap;
+        let raw = std::fs::read_to_string(self.config.home.join("audit.jsonl")).unwrap_or_default();
+        let lines: Vec<&str> = raw.lines().collect();
+        let start = lines.len().saturating_sub(max_lines);
+        use std::collections::BTreeSet;
+        let mut tools: BTreeMap<String, u64> = BTreeMap::new();
+        let mut per_agent: BTreeMap<String, u64> = BTreeMap::new();
+        let mut denials: BTreeMap<String, u64> = BTreeMap::new();
+        // Distinct real paths behind path-denials, so proposals can name exact fs_read entries.
+        let mut denied_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut asked = 0u64;
+        let mut total = 0u64;
+        for line in &lines[start..] {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            total += 1;
+            if let Some(t) = v["tool"].as_str() {
+                *tools.entry(t.to_string()).or_default() += 1;
+            }
+            if let Some(a) = v["agent"].as_str() {
+                *per_agent.entry(a.to_string()).or_default() += 1;
+            }
+            let outcome = v["outcome"].as_str().unwrap_or("");
+            if outcome.starts_with("denied") {
+                // Group by agent + the denial reason, with volatile specifics trimmed.
+                let agent = v["agent"].as_str().unwrap_or("?");
+                let reason = outcome.strip_prefix("denied: ").unwrap_or(outcome);
+                let key = format!("{agent}: {}", generalize_reason(reason));
+                *denials.entry(key.clone()).or_default() += 1;
+                // Keep the concrete path for fs_read/fs_write ceiling denials.
+                if let Some(path) = reason.strip_suffix(" is outside this agent's fs_read").or_else(|| reason.strip_suffix(" is outside this agent's fs_write")) {
+                    denied_paths.entry(key).or_default().insert(path.to_string());
+                }
+            } else if outcome.contains("approved") || outcome.contains("not approved") {
+                asked += 1;
+            }
+        }
+        let fmt = |m: &BTreeMap<String, u64>| -> String {
+            let mut v: Vec<_> = m.iter().collect();
+            v.sort_by(|a, b| b.1.cmp(a.1));
+            v.iter().map(|(k, n)| format!("  {n:>4}  {k}")).collect::<Vec<_>>().join("\n")
+        };
+        if total == 0 {
+            return "No audit entries yet — run some agent turns first.".into();
+        }
+        // Up to 20 distinct denied paths per group, so a proposal can cite exact entries.
+        let paths = {
+            let mut out = String::new();
+            for (key, set) in &denied_paths {
+                let shown: Vec<_> = set.iter().take(20).cloned().collect();
+                out.push_str(&format!("  {key}\n"));
+                for p in &shown {
+                    out.push_str(&format!("      {p}\n"));
+                }
+                if set.len() > shown.len() {
+                    out.push_str(&format!("      … and {} more\n", set.len() - shown.len()));
+                }
+            }
+            out
+        };
+        format!(
+            "audit entries summarized: {total}\n\nby agent:\n{}\n\nby tool:\n{}\n\napprovals asked: {asked}\n\ndenials (by agent + reason):\n{}\n\ndistinct paths denied (fs_read/fs_write):\n{}",
+            fmt(&per_agent),
+            fmt(&tools),
+            if denials.is_empty() { "  (none)".into() } else { fmt(&denials) },
+            if paths.is_empty() { "  (none)".into() } else { paths.trim_end() }
+        )
+    }
+
     /// One user turn in a named session: the agent may call tools through the broker
     /// until it answers in text. Sessions are append-only; past the budget a session is
     /// replaced, never rewritten. `initial_trust` applies only when the session is created.
@@ -580,4 +687,25 @@ impl Kernel {
             })
             .collect()
     }
+}
+
+/// Collapse the volatile specifics of a denial reason (paths, exact commands) so repeated
+/// denials of the same shape group together in the audit digest.
+fn generalize_reason(reason: &str) -> String {
+    if let Some(rest) = reason.strip_suffix(" is outside this agent's fs_read") {
+        let _ = rest;
+        return "<path> is outside this agent's fs_read".into();
+    }
+    if let Some(rest) = reason.strip_suffix(" is outside this agent's fs_write") {
+        let _ = rest;
+        return "<path> is outside this agent's fs_write".into();
+    }
+    if reason.starts_with("no exec grant covers") {
+        return "no exec grant covers `<program> <args>`".into();
+    }
+    if reason.contains("protected by a hard rule") {
+        return "<path> is protected by a hard rule".into();
+    }
+    // Otherwise keep the first clause, trimmed, so long reasons don't dominate the digest.
+    reason.split(['(', ';']).next().unwrap_or(reason).trim().chars().take(100).collect()
 }

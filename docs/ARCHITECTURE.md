@@ -127,3 +127,8 @@ new session seeded with a summary, never an in-place rewrite.
 7. Harness self-improvement (cf. Google Research Harness², Oct 2026): propose prompt/skill/tool-guidance edits
    backed by run evidence, **as proposals the operator approves**. Never capabilities, grants or exec rules: an
    agent that can widen its own permissions is the takeover path the broker exists to block.
+   *First cut shipped:* `systema propose` digests the audit log and has the capability-less `improver` agent
+   (no fs, shell, network, exec or mcp) draft proposals to `~/.systema/proposals/<ts>.md`. The kernel gathers the
+   evidence and writes the file; the improver only reasons. It cannot apply anything — manifests, grants and exec
+   rules all live in the hard-denied Systema home — so the operator edits by hand. Next: richer evidence
+   (latency, turn transcripts) and a diff-style proposal format.
