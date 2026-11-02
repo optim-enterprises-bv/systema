@@ -1,0 +1,37 @@
+# Systema node — systemd *user* service (runs as you, no root).
+#
+# The node uses your ~/.systema (identity key, grants, control socket, audit log)
+# and your local titan-engine, so it must run as your user — not a system/root
+# service. Install:
+#
+#   mkdir -p ~/.config/systemd/user
+#   ln -sf "$PWD/contrib/systema.service" ~/.config/systemd/user/systema.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now systema.service
+#   loginctl enable-linger "$USER"   # optional: keep running while logged out
+#
+# Then: systema tui
+#
+# Logs:   journalctl --user -u systema -f
+# Stop:   systemctl --user stop systema
+#
+# titan-engine (the inference server on :1234) is a separate service; the node
+# starts without it and simply can't run agents until it is up. If you run
+# titan-engine under systemd too, add its unit name to After=/Wants= below.
+
+[Unit]
+Description=Systema agentic OS node
+Documentation=https://github.com/optim-enterprises-bv/systema
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/systema node
+Restart=on-failure
+RestartSec=3
+# Where the node keeps its state (%h = your home).
+Environment=SYSTEMA_HOME=%h/.systema
+
+[Install]
+WantedBy=default.target

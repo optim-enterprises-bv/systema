@@ -76,6 +76,24 @@ On nodes behind NAT: `bootstrap = ["/ip4/<public-ip>/tcp/4001/p2p/<relay-id>"]`,
 Not yet: microVM sandbox for public agents, memory, a real cross-NAT test via a public bootstrap/relay, task boards,
 HTTP A2A gateway, reputation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
 
+## Install
+
+```sh
+cargo build --release
+sudo install -m755 target/release/systema /usr/local/bin/systema
+sudo install -m755 target/release/systema-tui /usr/local/bin/systema-tui
+```
+
+Run the node on login (optional, user service — no root):
+
+```sh
+ln -sf "$PWD/contrib/systema.service" ~/.config/systemd/user/systema.service
+systemctl --user daemon-reload && systemctl --user enable --now systema.service
+systema tui
+```
+
+See [`contrib/systema.service`](contrib/systema.service) for details.
+
 ## Quick start
 
 ```sh
