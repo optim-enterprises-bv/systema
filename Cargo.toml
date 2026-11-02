@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/systema-proto",
+    "crates/systema-trust",
+    "crates/systema-kernel",
+    "crates/systema-node",
+    "crates/systema-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+systema-proto = { path = "crates/systema-proto" }
+systema-trust = { path = "crates/systema-trust" }
+systema-kernel = { path = "crates/systema-kernel" }
+systema-node = { path = "crates/systema-node" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+base64 = "0.23"
+rand = "0.10"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+libp2p-identity = { version = "0.3", features = ["ed25519", "peerid", "rand"] }
+libp2p = { version = "0.57", features = [
+    "tokio", "tcp", "quic", "dns", "noise", "yamux", "macros",
+    "identify", "ping", "mdns", "kad", "gossipsub", "relay", "dcutr",
+] }

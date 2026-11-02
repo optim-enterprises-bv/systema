@@ -1,0 +1,17 @@
+[package]
+name = "systema-node"
+description = "Systema swarm node: libp2p identity, NAT traversal, DHT discovery, gossip."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+libp2p.workspace = true
+systema-proto.workspace = true
+systema-trust.workspace = true
+systema-kernel.workspace = true

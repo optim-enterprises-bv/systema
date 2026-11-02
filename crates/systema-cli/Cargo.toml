@@ -1,0 +1,23 @@
+[package]
+name = "systema-cli"
+description = "The `systema` command."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "systema"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+systema-proto.workspace = true
+systema-kernel.workspace = true
+systema-node.workspace = true

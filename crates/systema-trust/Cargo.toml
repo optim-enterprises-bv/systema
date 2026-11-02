@@ -1,0 +1,11 @@
+[package]
+name = "systema-trust"
+description = "Systema trust gate: capability grants, quarantine, replay and forwarding policy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+systema-proto.workspace = true

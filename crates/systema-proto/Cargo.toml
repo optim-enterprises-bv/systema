@@ -1,0 +1,15 @@
+[package]
+name = "systema-proto"
+description = "Wire types for Systema: A2A-shaped agent cards and messages, signed envelopes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+libp2p-identity.workspace = true
