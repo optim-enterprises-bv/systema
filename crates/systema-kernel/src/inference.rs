@@ -23,12 +23,7 @@ struct ChatResponse {
 
 #[derive(Deserialize)]
 struct Choice {
-    message: RespMessage,
-}
-
-#[derive(Deserialize)]
-struct RespMessage {
-    content: Option<String>,
+    message: ChatMessage,
 }
 
 impl InferenceClient {
@@ -44,9 +39,19 @@ impl InferenceClient {
         }
     }
 
-    pub async fn chat(&self, tier: ModelTier, messages: &[ChatMessage]) -> anyhow::Result<String> {
+    /// One completion. `tools` is the OpenAI `tools` array (empty = no tools offered).
+    /// Returns the assistant message, which may carry `tool_calls` instead of text.
+    pub async fn complete(
+        &self,
+        tier: ModelTier,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+    ) -> anyhow::Result<ChatMessage> {
         let url = format!("{}/chat/completions", self.cfg.endpoint.trim_end_matches('/'));
         let mut body = json!({ "model": self.model_for(tier), "messages": messages, "stream": false });
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
         if let Some(t) = self.cfg.temperature {
             body["temperature"] = json!(t);
         }
@@ -62,14 +67,20 @@ impl InferenceClient {
             .with_context(|| format!("is titan-engine running at {}?", self.cfg.endpoint))?
             .error_for_status()?;
         let parsed: ChatResponse = resp.json().await?;
-        parsed
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .context("empty completion")
+        let mut msg = parsed.choices.into_iter().next().context("no choices in completion")?.message;
+        msg.content = msg.content.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        if msg.tool_calls.as_ref().is_some_and(Vec::is_empty) {
+            msg.tool_calls = None;
+        }
+        if msg.content.is_none() && msg.tool_calls.is_none() {
+            anyhow::bail!("empty completion");
+        }
+        Ok(msg)
+    }
+
+    /// Plain text completion with no tools.
+    pub async fn chat(&self, tier: ModelTier, messages: &[ChatMessage]) -> anyhow::Result<String> {
+        self.complete(tier, messages, &[]).await?.content.context("empty completion")
     }
 
     /// Cheap reachability check.

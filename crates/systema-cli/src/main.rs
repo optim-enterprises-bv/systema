@@ -68,6 +68,7 @@ enum Cmd {
 const EXAMPLE_AGENTS: &[(&str, &str)] = &[
     ("coder.toml", include_str!("../../../agents/coder.toml")),
     ("sysadmin.toml", include_str!("../../../agents/sysadmin.toml")),
+    ("researcher.toml", include_str!("../../../agents/researcher.toml")),
 ];
 
 fn identity_path(home: &Path) -> PathBuf {
@@ -153,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Ask { agent, prompt } => {
             let k = Kernel::new(Config::load(&home)?)?;
-            println!("{}", k.ask(&agent, &prompt.join(" ")).await?);
+            println!("{}", k.ask(&agent, &prompt.join(" "), &TerminalApprover).await?);
         }
         Cmd::Node => {
             let kp = load_identity(&home)?;
@@ -200,6 +201,25 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Grants => println!("{}", serde_json::to_string_pretty(&control(&home, Control::Grants).await?)?),
     }
     Ok(())
+}
+
+/// Asks on the terminal; refuses when there is no terminal to ask on.
+struct TerminalApprover;
+
+impl systema_kernel::Approver for TerminalApprover {
+    fn approve(&self, agent: &str, request: &systema_kernel::ToolRequest, reason: &str) -> bool {
+        use std::io::{BufRead as _, IsTerminal as _, Write as _};
+        if !std::io::stdin().is_terminal() {
+            eprintln!("[systema] {agent} wants `{}`: needs approval but stdin is not a terminal; denied", request.summary());
+            return false;
+        }
+        let mut err = std::io::stderr();
+        let _ = write!(err, "\n[systema] {agent} wants to: {}\n          why asking: {reason}\n          allow once? [y/N] ", request.summary());
+        let _ = err.flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut line);
+        matches!(line.trim(), "y" | "Y" | "yes")
+    }
 }
 
 async fn control(home: &Path, cmd: Control) -> anyhow::Result<serde_json::Value> {

@@ -11,6 +11,9 @@ pub struct Config {
     pub node: NodeConfig,
     /// Directory of agent manifests (`*.toml`). Relative paths resolve against SYSTEMA_HOME.
     pub agents_dir: PathBuf,
+    /// SYSTEMA_HOME this config was loaded from (not stored in the file).
+    #[serde(skip)]
+    pub home: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +48,12 @@ pub struct NodeConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { inference: InferenceConfig::default(), node: NodeConfig::default(), agents_dir: "agents".into() }
+        Self {
+            inference: InferenceConfig::default(),
+            node: NodeConfig::default(),
+            agents_dir: "agents".into(),
+            home: home_dir(),
+        }
     }
 }
 
@@ -79,6 +87,7 @@ impl Config {
     pub fn load(home: &Path) -> anyhow::Result<Self> {
         let path = home.join("systema.toml");
         let mut cfg: Config = if path.exists() { toml::from_str(&std::fs::read_to_string(&path)?)? } else { Config::default() };
+        cfg.home = home.to_path_buf();
         if cfg.agents_dir.is_relative() {
             cfg.agents_dir = home.join(&cfg.agents_dir);
         }

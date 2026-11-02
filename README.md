@@ -18,10 +18,16 @@ Scaffold, phase 1–2. Works today:
   Unknown peers land in your **approvals inbox**; approved peers get rate-limited, per-skill grants; replies are
   signed by the answering node and verified.
 - `systema peers | inbox | approve | reject | block | grants`: drive the running node over a private Unix socket.
-- `systema status | agents | cards | id`. Every inbound decision is logged to `~/.systema/audit.jsonl`.
+- **Capability broker + tools.** Agents call `read_file`, `list_dir`, `write_file`, `run`, `fetch_url`; the kernel
+  checks each call against the agent's manifest, executes it on the agent's behalf and audits it. Credentials,
+  Systema's own state and `/proc` are hard-denied; each agent has a free workspace.
+- **Rule of Two.** Sessions track untrusted content / private data / outbound channel; a call that would complete
+  the lethal trifecta needs your approval (`y/N` in `systema ask`, refused on the node). An approved remote peer
+  therefore can't get your files back through an agent.
+- `systema status | agents | cards | id`. Every inbound and tool decision is logged to `~/.systema/audit.jsonl`.
 
-Not yet: tools/MCP, podman sandbox, memory, DHT skill lookup across the internet, task boards, HTTP A2A gateway,
-reputation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the roadmap.
+Not yet: MCP servers, microVM sandbox for public agents, memory, DHT skill lookup across the internet, task boards,
+HTTP A2A gateway, reputation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model and roadmap.
 
 ## Quick start
 

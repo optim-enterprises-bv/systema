@@ -3329,6 +3329,7 @@ name = "systema-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
@@ -3337,6 +3338,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "url",
 ]
 
 [[package]]

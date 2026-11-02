@@ -18,6 +18,29 @@ tags = ["linux", "fedora"]
 fs_read = ["/var/log", "/etc"]
 fs_write = []
 network = false
-shell = false           # flip on once the podman sandbox lands
+shell = false           # true = any other program, always with approval
 mcp = []
 public = false          # local only
+
+# Programs run directly (no shell), cwd = workspace, scrubbed env, 60 s timeout.
+[[capabilities.exec]]
+program = "df"
+mode = "allow"
+
+[[capabilities.exec]]
+program = "free"
+mode = "allow"
+
+[[capabilities.exec]]
+program = "systemctl"
+args_prefix = ["status"]
+mode = "allow"
+
+[[capabilities.exec]]
+program = "systemctl"
+args_prefix = ["--failed"]
+mode = "allow"
+
+[[capabilities.exec]]
+program = "journalctl"
+mode = "ask"            # logs can hold secrets: approve each time

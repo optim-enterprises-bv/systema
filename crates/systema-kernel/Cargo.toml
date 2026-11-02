@@ -14,5 +14,7 @@ toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
+url = "2"
+libc = "0.2"
 systema-proto.workspace = true
 systema-trust.workspace = true

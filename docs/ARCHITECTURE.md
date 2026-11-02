@@ -23,6 +23,45 @@
 └────────────── titan-engine :1234 (35B-A3B MoE, 27B dense) ─────────┘
 ```
 
+## Security model: broker the access, sandbox the untrusted input
+
+An agentic OS needs agents with real power over the machine. The danger is not power itself but the
+**lethal trifecta** (Simon Willison): one session that has (1) private data, (2) untrusted content in its context,
+and (3) a way to act or communicate outward. Prompt injection turns that combination into exfiltration or
+takeover, and no model or guardrail reliably refuses. Meta's **Agents Rule of Two** states the fix: at most two
+of the three per session without a human decision.
+
+Systema applies it in the kernel:
+
+- **Capability broker.** Agents never touch the host directly. Every tool call (read, list, write, run, fetch)
+  is a request to the kernel, which checks it against the agent's manifest, executes it on the agent's behalf
+  and audits it. The manifest is the ceiling; nothing outside it is ever granted.
+- **Hard denials** regardless of manifest: the Systema home (identity key, grants, control socket, audit
+  log; agents can't read or edit their own policy), `~/.ssh`, `~/.gnupg`, keyrings, browser profiles,
+  `/etc/shadow` and similar. Paths are canonicalized first, so `..` and symlinks can't escape.
+- **Per-session taint (the Rule of Two).** Each session tracks which legs it holds:
+  - *untrusted*: it read a remote peer's message or fetched content (a fetch taints the session);
+  - *private*: it read outside its workspace, or ran a program;
+  - *outbound*: it fetched a URL, ran a program, or its replies go to a remote peer.
+  A request that would make a session hold all three is escalated to **ask the operator**. Interactively that's
+  a y/N prompt; on the node, with no human present, it is **denied**. Remote sessions start untrusted *and*
+  outbound (the reply goes to the stranger), so a stranger can never get your private data back through an
+  agent without you approving it.
+- **Workspaces.** Each agent has `~/.systema/workspaces/<agent>/`, always readable and writable, not private.
+- **Execution without a shell.** `run` executes one program with an argument vector (no shell), with a scrubbed
+  environment (no credentials), cwd set to the workspace, a timeout and an output cap. Each manifest
+  `exec` grant names a program and an argument prefix, with mode `allow` or `ask`.
+- **Fetch guards.** http(s) only; loopback, private, link-local and CGNAT addresses are refused, so a fetch can't
+  reach titan-engine, the control socket's neighbours or your LAN.
+
+This is session-level taint, a conservative approximation of **CaMeL** (Google DeepMind, *Defeating Prompt
+Injections by Design*): CaMeL tracks provenance per value through a planner/interpreter split (a hardened
+**dual-LLM pattern**), so it can allow more without risk. The planned step there is a quarantined reader whose
+output reaches privileged agents only as opaque references.
+
+**Sandboxing** (microVM via libkrun) is reserved for code that processes strangers' input: public agents and
+programs they write and run. Operator-only agents get host access through the broker.
+
 ## Rules enforced in code, not prompts
 
 1. **Remote input never reaches a tool-holding agent without a grant.** Unknown peers → approvals inbox
@@ -55,7 +94,8 @@ new session seeded with a summary, never an in-place rewrite.
 ## Roadmap
 
 1. ~~Kernel MVP: scheduler, sessions, bus, CLI~~ · ~~Node: identity, transports, mDNS, DHT, card gossip~~
-2. Agent runtime loop with MCP tools inside podman; capability enforcement; memory store.
+2. ~~Capability broker, tool-calling agent loop, per-session taint (Rule of Two)~~; MCP servers behind the broker;
+   libkrun microVMs for public agents; memory store; quarantined reader with opaque references (CaMeL-style).
 3. ~~Direct agent↔agent requests over libp2p request-response, through the trust gate; approvals inbox (CLI)~~;
    TUI inbox with live notifications.
 4. `systema find <skill>`: DHT provider lookup; bootstrap node on a VPS; NAT test across real networks.
