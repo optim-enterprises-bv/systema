@@ -23,12 +23,16 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 - [x] **Shared message board** (`board_read` / `board_post`) — agents coordinate through a common
       log. Shared posts are treated as untrusted-and-private input, so the trifecta gates a
       swarm agent from reading the operator's board and leaking it outward.
+- [x] **Multi-agent delegation + task board** (`delegate_task` / `task_list`, `systema tasks`) — an
+      agent hands a self-contained sub-task to another agent, which runs a full turn and returns
+      its result; every delegation is recorded durably on the task board (running → done/failed).
+      Taint flows forward (the sub-task inherits the caller's trust and its final taint merges
+      back), delegation is refused from untrusted sessions (no privilege escalation), and chains
+      are depth-limited and non-self. *Next on this: parallel fan-out and cross-swarm delegation.*
 
 ## Tier 1 — biggest leverage (make it an OS that *does* things)
-- [ ] **Multi-agent delegation + task board.** Today's orchestrator does single-shot routing. Add a
-      `delegate_task` tool (cf. Hermes) and a durable task queue so an agent can decompose work,
-      hand sub-tasks to other local (or swarm) agents in parallel, and merge results. The message
-      board is the substrate; delegation is the coordination layer on top.
+- [ ] **Parallel + cross-swarm delegation.** Delegation is sequential and local today; add parallel
+      fan-out of independent sub-tasks and delegation to agents on other swarm nodes over A2A.
 - [ ] **Scheduling & triggers.** A daemon loop that runs agents on a schedule (cron), on a file
       change, on inbound swarm messages, or on a board post — so the OS acts without being prompted.
 - [ ] **Semantic memory / retrieval (RAG).** Upgrade from key/value `memory` to embeddings +

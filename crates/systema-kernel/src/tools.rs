@@ -98,6 +98,20 @@ pub fn schemas(m: &AgentManifest) -> Vec<Value> {
             json!({ "type": "object", "properties": { "topic": { "type": "string" }, "text": { "type": "string" } }, "required": ["text"] }),
         ));
     }
+    if m.capabilities.delegate {
+        v.push(function(
+            "delegate_task",
+            "Hand a self-contained sub-task to another agent and get its result back. Use this to \
+             reach work you cannot do yourself (another agent's files, skills or tools). Give the \
+             agent name and a clear, complete task description.",
+            json!({ "type": "object", "properties": { "agent": { "type": "string", "description": "The agent to do the task" }, "task": { "type": "string", "description": "A complete, self-contained description of what to do" } }, "required": ["agent", "task"] }),
+        ));
+        v.push(function(
+            "task_list",
+            "List recent delegated tasks and their status (running/done/failed).",
+            json!({ "type": "object", "properties": {} }),
+        ));
+    }
     if m.capabilities.network {
         v.push(function(
             "fetch_url",
@@ -137,6 +151,8 @@ pub fn parse(name: &str, arguments: &str) -> anyhow::Result<ToolRequest> {
             text: s("text")?,
         },
         "board_read" => ToolRequest::BoardRead { topic: a["topic"].as_str().map(str::to_string) },
+        "delegate_task" => ToolRequest::DelegateTask { agent: s("agent")?, task: s("task")? },
+        "task_list" => ToolRequest::TaskList,
         "fetch_url" => ToolRequest::Fetch { url: s("url")? },
         other => bail!("unknown tool `{other}`"),
     })
