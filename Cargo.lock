@@ -3355,6 +3355,7 @@ dependencies = [
  "systema-proto",
  "systema-trust",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

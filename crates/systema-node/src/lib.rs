@@ -31,9 +31,10 @@ use libp2p::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use systema_kernel::{
-    Kernel,
+    Answer, Approver, Event, EventKind, Kernel, ToolRequest, TrustState,
     config::{DhtMode, NodeConfig},
 };
+use tokio_util::sync::CancellationToken;
 use systema_proto::{
     A2A_PROTOCOL, A2aResponse, AgentCard, DEFAULT_MAX_AGE_MS, MAX_REQUEST_TEXT, Message, Part, Role, Signed, now_ms,
     random_id,
@@ -117,6 +118,48 @@ pub struct InboxItem {
 
 type Finished = (ResponseChannel<A2aResponse>, A2aResponse);
 
+/// Shared registry of tool approvals awaiting an operator answer, keyed by approval id.
+type PendingApprovals = Arc<std::sync::Mutex<HashMap<String, std::sync::mpsc::Sender<Answer>>>>;
+
+/// [`Approver`] for the daemon: emits an `ApprovalNeeded` event and blocks (on a dedicated
+/// worker thread, via the kernel's `block_in_place`) until the operator answers via the
+/// control socket, or a timeout elapses.
+struct DaemonApprover {
+    events: tokio::sync::broadcast::Sender<Event>,
+    pending: PendingApprovals,
+}
+
+/// How long a tool approval waits for the operator before defaulting to deny.
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
+
+impl Approver for DaemonApprover {
+    fn approve(&self, agent: &str, request: &ToolRequest, reason: &str, rememberable: bool) -> Answer {
+        let id = random_id()[..8].to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending.lock().unwrap().insert(id.clone(), tx);
+        let _ = self.events.send(Event {
+            ts: now_ms(),
+            agent: Some(agent.to_string()),
+            session: None,
+            kind: EventKind::ApprovalNeeded {
+                id: id.clone(),
+                request: request.summary(),
+                reason: reason.to_string(),
+                rememberable,
+            },
+        });
+        let answer = rx.recv_timeout(APPROVAL_TIMEOUT).unwrap_or(Answer::Deny);
+        self.pending.lock().unwrap().remove(&id);
+        let _ = self.events.send(Event {
+            ts: now_ms(),
+            agent: Some(agent.to_string()),
+            session: None,
+            kind: EventKind::ApprovalResolved { id, decision: format!("{answer:?}") },
+        });
+        answer
+    }
+}
+
 pub struct Node {
     swarm: Swarm<Behaviour>,
     cfg: NodeConfig,
@@ -138,6 +181,9 @@ pub struct Node {
     find_by_card: HashMap<OutboundRequestId, u64>,
     last_provide: Option<Instant>,
     relays: Vec<RelayState>,
+    /// Operator turns in flight, keyed by session, with a token to cancel them.
+    running: HashMap<String, CancellationToken>,
+    pending_approvals: PendingApprovals,
 }
 
 impl Node {
@@ -236,6 +282,8 @@ impl Node {
             find_by_card: HashMap::new(),
             last_provide: None,
             relays: Vec::new(),
+            running: HashMap::new(),
+            pending_approvals: Arc::default(),
         })
     }
 
@@ -304,8 +352,9 @@ impl Node {
         self.provide_skills(true);
 
         let (ctl_tx, mut ctl_rx) = mpsc::channel(16);
-        control::serve(&self.home, ctl_tx)?;
+        control::serve(&self.home, ctl_tx, self.kernel.event_sender())?;
         let mut done_rx = self.done_rx.take().expect("run called twice");
+        let mut kernel_events = self.kernel.subscribe();
 
         let mut announce = tokio::time::interval(Duration::from_secs(self.cfg.announce_secs.max(5)));
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
@@ -325,8 +374,18 @@ impl Node {
                         debug!("requester went away before the reply was ready");
                     }
                 }
+                ev = kernel_events.recv() => if let Ok(ev) = ev { self.on_kernel_event(ev); },
                 Some((cmd, reply)) = ctl_rx.recv() => self.on_control(cmd, reply),
                 ev = self.swarm.select_next_some() => self.handle(ev),
+            }
+        }
+    }
+
+    /// Prune finished operator turns so `Sessions`/`Cancel` reflect reality.
+    fn on_kernel_event(&mut self, ev: Event) {
+        if let EventKind::TurnFinished { .. } = ev.kind {
+            if let Some(session) = ev.session {
+                self.running.remove(&session);
             }
         }
     }
@@ -682,8 +741,94 @@ impl Node {
                 }
             },
             Control::Grants => Ok(json!(self.trust.policy())),
+
+            // --- agent control plane ---
+            Control::Ask { agent, text } => {
+                if self.kernel.agent(&agent).is_none() {
+                    Err(format!("no agent named {agent}"))
+                } else if self.running.contains_key(&agent) {
+                    Err(format!("{agent} already has a turn running; steer or cancel it first"))
+                } else {
+                    self.spawn_operator_turn(agent.clone(), agent, text);
+                    Ok(json!({ "started": true }))
+                }
+            }
+            Control::Steer { session, text } => {
+                if self.running.contains_key(&session) {
+                    let kernel = self.kernel.clone();
+                    let s = session.clone();
+                    tokio::spawn(async move { kernel.steer(&s, &text).await });
+                    Ok(json!({ "steered": session }))
+                } else if self.kernel.agent(&session).is_some() {
+                    // Idle agent: steering starts a fresh turn with the text as the prompt.
+                    self.spawn_operator_turn(session.clone(), session.clone(), text);
+                    Ok(json!({ "started": session }))
+                } else {
+                    Err(format!("no running session or agent named {session}"))
+                }
+            }
+            Control::Cancel { session } => match self.running.remove(&session) {
+                Some(token) => {
+                    token.cancel();
+                    Ok(json!({ "cancelled": session }))
+                }
+                None => Err(format!("no running turn for {session}")),
+            },
+            Control::Sessions => Ok(json!({
+                "running": self.running.keys().cloned().collect::<Vec<_>>(),
+            })),
+            Control::Resolve { id, answer, remember } => {
+                let answer = if remember && matches!(answer, Answer::Once) { Answer::Always } else { answer };
+                match self.pending_approvals.lock().unwrap().get(&id).cloned() {
+                    Some(tx) => {
+                        let _ = tx.send(answer);
+                        Ok(json!({ "resolved": id }))
+                    }
+                    None => Err(format!("no pending approval {id} (it may have timed out)")),
+                }
+            }
+            Control::Approvals => Ok(json!({
+                "pending": self.pending_approvals.lock().unwrap().keys().cloned().collect::<Vec<_>>(),
+            })),
+            Control::Rules => Ok(json!(self.kernel.approvals.rules())),
+            Control::Forget { agent, key } => {
+                if self.kernel.approvals.forget(&agent, &key) {
+                    Ok(json!({ "forgot": key }))
+                } else {
+                    Err("no such remembered rule".into())
+                }
+            }
+            Control::Agents => Ok(json!(
+                self.kernel.agents().map(|m| json!({
+                    "name": m.name,
+                    "description": m.description,
+                    "model": format!("{:?}", m.model).to_lowercase(),
+                    "priority": format!("{:?}", m.priority).to_lowercase(),
+                    "public": m.capabilities.public,
+                    "skills": m.skills.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>()
+            )),
+            // Streamed by the socket handler, never dispatched here.
+            Control::Watch => Err("watch is a streaming command".into()),
         };
         let _ = reply.send(result);
+    }
+
+    /// Spawn an operator turn, tracking its cancellation token under `session`.
+    fn spawn_operator_turn(&mut self, agent: String, session: String, text: String) {
+        let cancel = CancellationToken::new();
+        self.running.insert(session.clone(), cancel.clone());
+        let kernel = self.kernel.clone();
+        let approver = Arc::new(DaemonApprover {
+            events: self.kernel.event_sender(),
+            pending: self.pending_approvals.clone(),
+        });
+        tokio::spawn(async move {
+            let _ = kernel
+                .ask_in(&agent, &session, &text, None, TrustState::operator(), approver.as_ref(), &cancel)
+                .await;
+            // The node prunes `running` on the TurnFinished event.
+        });
     }
 
     // ---------------------------------------------------------------------------------

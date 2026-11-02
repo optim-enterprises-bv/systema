@@ -65,6 +65,30 @@ enum Cmd {
     Block { peer: String },
     /// Show grants and the blocklist.
     Grants,
+    /// Ask a local agent through the running node (streams via `systema watch`/`tui`).
+    Live { agent: String, prompt: Vec<String> },
+    /// Inject operator guidance into a running session (or start one).
+    Steer { session: String, text: Vec<String> },
+    /// Cancel a running turn.
+    CancelTurn { session: String },
+    /// List running sessions.
+    Sessions,
+    /// List tool approvals waiting for an answer.
+    Approvals,
+    /// Answer a pending tool approval.
+    Resolve {
+        id: String,
+        /// Allow and remember.
+        #[arg(long)]
+        always: bool,
+        /// Deny instead of allowing.
+        #[arg(long)]
+        deny: bool,
+    },
+    /// List remembered "always allow" rules.
+    Rules,
+    /// Stream live kernel events (ctrl-c to stop).
+    Watch,
 }
 
 const EXAMPLE_AGENTS: &[(&str, &str)] = &[
@@ -217,6 +241,34 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Reject { id } => println!("{}", control(&home, Control::Reject { id }).await?),
         Cmd::Block { peer } => println!("{}", control(&home, Control::Block { peer }).await?),
         Cmd::Grants => println!("{}", serde_json::to_string_pretty(&control(&home, Control::Grants).await?)?),
+        Cmd::Live { agent, prompt } => {
+            control(&home, Control::Ask { agent: agent.clone(), text: prompt.join(" ") }).await?;
+            println!("started turn for {agent}; follow it with `systema watch` or `systema tui`");
+        }
+        Cmd::Steer { session, text } => {
+            println!("{}", control(&home, Control::Steer { session, text: text.join(" ") }).await?);
+        }
+        Cmd::CancelTurn { session } => println!("{}", control(&home, Control::Cancel { session }).await?),
+        Cmd::Sessions => println!("{}", serde_json::to_string_pretty(&control(&home, Control::Sessions).await?)?),
+        Cmd::Approvals => println!("{}", serde_json::to_string_pretty(&control(&home, Control::Approvals).await?)?),
+        Cmd::Resolve { id, always, deny } => {
+            let answer = if deny {
+                systema_kernel::Answer::Deny
+            } else if always {
+                systema_kernel::Answer::Always
+            } else {
+                systema_kernel::Answer::Once
+            };
+            println!("{}", control(&home, Control::Resolve { id, answer, remember: always }).await?);
+        }
+        Cmd::Rules => println!("{}", serde_json::to_string_pretty(&control(&home, Control::Rules).await?)?),
+        Cmd::Watch => {
+            let mut lines = systema_node::control::watch(&home).await?;
+            eprintln!("[watching {} — ctrl-c to stop]", home.display());
+            while let Some(line) = lines.next_line().await? {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
 }

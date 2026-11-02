@@ -57,6 +57,8 @@ pub struct Kernel {
     pub mcp: mcp::McpManager,
     pub approvals: Arc<ApprovalStore>,
     events: broadcast::Sender<Event>,
+    /// Operator guidance queued per session, drained at the top of each loop iteration.
+    steer: Mutex<HashMap<String, Vec<String>>>,
     agents: HashMap<String, AgentManifest>,
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
@@ -73,6 +75,7 @@ impl Kernel {
             mcp: mcp::McpManager::default(),
             approvals: Arc::new(ApprovalStore::load(&config.home)),
             events,
+            steer: Mutex::new(HashMap::new()),
             bus: Bus::default(),
             agents,
             sessions: Mutex::new(HashMap::new()),
@@ -93,6 +96,16 @@ impl Kernel {
     /// Live kernel events (turns, tool calls, outcomes). See [`events`].
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// A clone of the event sender, for components (e.g. the daemon approver) that emit too.
+    pub fn event_sender(&self) -> broadcast::Sender<Event> {
+        self.events.clone()
+    }
+
+    /// Queue operator guidance for a session; applied before its next model step.
+    pub async fn steer(&self, session_key: &str, text: &str) {
+        self.steer.lock().await.entry(session_key.to_string()).or_default().push(text.to_string());
     }
 
     fn emit(&self, agent: Option<&str>, session: Option<&str>, kind: EventKind) {
@@ -174,6 +187,12 @@ impl Kernel {
         for _ in 0..MAX_TOOL_STEPS {
             if cancel.is_cancelled() {
                 anyhow::bail!("cancelled by operator");
+            }
+            // Apply any operator steering queued since the last step.
+            let steers = self.steer.lock().await.remove(session_key).unwrap_or_default();
+            for text in steers {
+                session.push_user(format!("[operator steering] {text}"));
+                self.emit(Some(&m.name), Some(session_key), EventKind::Steered { text });
             }
             self.emit(Some(&m.name), Some(session_key), EventKind::Thinking);
             let messages = session.messages();
