@@ -37,6 +37,25 @@ pub fn schemas(m: &AgentManifest) -> Vec<Value> {
             "Create or overwrite a text file. Your workspace is always writable.",
             json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }),
         ),
+        function(
+            "patch",
+            "Edit a text file in place: replace an exact snippet with new text. `old` must occur \
+             exactly once in the file. Prefer this over write_file for small edits.",
+            json!({ "type": "object", "properties": { "path": { "type": "string" }, "old": { "type": "string", "description": "Exact text to replace (must be unique in the file)" }, "new": { "type": "string", "description": "Replacement text" } }, "required": ["path", "old", "new"] }),
+        ),
+        function(
+            "search_files",
+            "Recursively search a directory for a substring (case-insensitive) in file names and \
+             text file contents. Skips hidden files. Returns matching paths and lines.",
+            json!({ "type": "object", "properties": { "path": { "type": "string", "description": "Directory to search under" }, "query": { "type": "string" } }, "required": ["path", "query"] }),
+        ),
+        function(
+            "memory",
+            "Your own persistent notes, surviving across turns and restarts. action=set stores \
+             value at key; action=get returns a key; action=list returns all keys; action=delete \
+             removes a key.",
+            json!({ "type": "object", "properties": { "action": { "type": "string", "enum": ["set", "get", "list", "delete"] }, "key": { "type": "string" }, "value": { "type": "string" } }, "required": ["action"] }),
+        ),
     ];
     if m.capabilities.shell || !m.capabilities.exec.is_empty() {
         let allowed: Vec<String> = m
@@ -84,6 +103,13 @@ pub fn parse(name: &str, arguments: &str) -> anyhow::Result<ToolRequest> {
         "read_file" => ToolRequest::ReadFile { path: s("path")? },
         "list_dir" => ToolRequest::ListDir { path: s("path")? },
         "write_file" => ToolRequest::WriteFile { path: s("path")?, content: s("content")? },
+        "patch" => ToolRequest::Patch { path: s("path")?, old: s("old")?, new: s("new")? },
+        "search_files" => ToolRequest::SearchFiles { path: s("path")?, query: s("query")? },
+        "memory" => ToolRequest::Memory {
+            action: s("action")?,
+            key: a["key"].as_str().unwrap_or("").to_string(),
+            value: a["value"].as_str().unwrap_or("").to_string(),
+        },
         "run" => ToolRequest::Run {
             program: s("program")?,
             args: match &a["args"] {
@@ -151,6 +177,31 @@ pub async fn execute(req: &ToolRequest, checked: &Checked, workspace: &Path) -> 
             f.write_all(content.as_bytes())?;
             Ok(format!("wrote {} bytes to {}", content.len(), p.display()))
         }
+        (ToolRequest::Patch { old, new, .. }, Target::Path(p)) => {
+            let before = std::fs::read_to_string(p).with_context(|| format!("{}", p.display()))?;
+            let count = before.matches(old.as_str()).count();
+            match count {
+                0 => bail!("the `old` text was not found in {}", p.display()),
+                1 => {}
+                n => bail!("the `old` text occurs {n} times in {}; include more context so it is unique", p.display()),
+            }
+            let after = before.replacen(old.as_str(), new, 1);
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(p)?;
+            f.write_all(after.as_bytes())?;
+            Ok(format!(
+                "patched {}: replaced {} bytes with {} bytes",
+                p.display(),
+                old.len(),
+                new.len()
+            ))
+        }
+        (ToolRequest::SearchFiles { query, .. }, Target::Path(root)) => Ok(search_files(root, query)),
+        (ToolRequest::Memory { action, key, value }, Target::Memory) => memory_op(workspace, action, key, value),
         (ToolRequest::Run { args, .. }, Target::Program(prog)) => {
             std::fs::create_dir_all(workspace)?;
             let child = tokio::process::Command::new(prog)
@@ -246,6 +297,100 @@ async fn fetch(url: &str) -> anyhow::Result<String> {
     Ok(format!("HTTP {status} ({ctype})\n{}", String::from_utf8_lossy(&body)))
 }
 
+/// Bounded, case-insensitive recursive search. Matches file names and lines of text files.
+/// Skips hidden entries (so credential dirs like `.ssh` are never descended into) and
+/// symlinks (so a search can't be steered out of the allowed tree).
+fn search_files(root: &Path, query: &str) -> String {
+    const MAX_FILES: usize = 20_000;
+    const MAX_MATCHES: usize = 200;
+    let needle = query.to_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut files_seen = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.filter_map(Result::ok) {
+            if out.len() >= MAX_MATCHES || files_seen >= MAX_FILES {
+                out.push("[search truncated]".into());
+                return out.join("\n");
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue; // hidden files/dirs (incl. credential stores) are skipped
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if name.to_lowercase().contains(&needle) {
+                out.push(format!("{}  (name)", path.display()));
+            }
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                files_seen += 1;
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.len() > READ_CAP {
+                    continue;
+                }
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    for (n, line) in text.lines().enumerate() {
+                        if line.to_lowercase().contains(&needle) {
+                            let snippet: String = line.trim().chars().take(200).collect();
+                            out.push(format!("{}:{}: {}", path.display(), n + 1, snippet));
+                            if out.len() >= MAX_MATCHES {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() { format!("no matches for {query:?} under {}", root.display()) } else { out.join("\n") }
+}
+
+/// The agent's own key/value memory, persisted as a JSON object in its workspace.
+fn memory_op(workspace: &Path, action: &str, key: &str, value: &str) -> anyhow::Result<String> {
+    use std::collections::BTreeMap;
+    let file = workspace.join("memory.json");
+    let mut store: BTreeMap<String, String> =
+        std::fs::read_to_string(&file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let save = |store: &BTreeMap<String, String>| -> anyhow::Result<()> {
+        std::fs::create_dir_all(workspace)?;
+        std::fs::write(&file, serde_json::to_vec_pretty(store)?)?;
+        Ok(())
+    };
+    match action {
+        "set" => {
+            if key.is_empty() {
+                bail!("memory set needs a key");
+            }
+            store.insert(key.to_string(), value.to_string());
+            save(&store)?;
+            Ok(format!("remembered {key}"))
+        }
+        "get" => match store.get(key) {
+            Some(v) => Ok(v.clone()),
+            None => Ok(format!("(no memory at key {key})")),
+        },
+        "list" => {
+            if store.is_empty() {
+                Ok("(memory is empty)".into())
+            } else {
+                Ok(store.keys().cloned().collect::<Vec<_>>().join("\n"))
+            }
+        }
+        "delete" => {
+            let had = store.remove(key).is_some();
+            save(&store)?;
+            Ok(if had { format!("forgot {key}") } else { format!("(no memory at key {key})") })
+        }
+        other => bail!("unknown memory action `{other}` (use set/get/list/delete)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +406,60 @@ mod tests {
         assert!(parse("run", r#"{"program":"ls","args":"-la"}"#).is_err());
         assert!(parse("rm_rf", "{}").is_err());
         assert!(parse("read_file", "not json").is_err());
+        assert_eq!(
+            parse("patch", r#"{"path":"a","old":"x","new":"y"}"#).unwrap(),
+            ToolRequest::Patch { path: "a".into(), old: "x".into(), new: "y".into() }
+        );
+        assert_eq!(
+            parse("memory", r#"{"action":"list"}"#).unwrap(),
+            ToolRequest::Memory { action: "list".into(), key: String::new(), value: String::new() }
+        );
+    }
+
+    fn tmp() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("systema-tools-{}", systema_proto::random_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn patch_requires_unique_match() {
+        let ws = tmp();
+        let f = ws.join("code.rs");
+        std::fs::write(&f, "let a = 1;\nlet a = 1;\n").unwrap();
+        let checked = |p: &Path| Checked { decision: crate::capability::Decision::Allow, legs: Default::default(), target: Target::Path(p.to_path_buf()) };
+        // Two occurrences → refused.
+        let dup = ToolRequest::Patch { path: f.display().to_string(), old: "let a = 1;".into(), new: "let a = 2;".into() };
+        assert!(execute(&dup, &checked(&f), &ws).await.is_err());
+        // Unique occurrence → applied.
+        std::fs::write(&f, "hello world\n").unwrap();
+        let one = ToolRequest::Patch { path: f.display().to_string(), old: "world".into(), new: "there".into() };
+        execute(&one, &checked(&f), &ws).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello there\n");
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn search_skips_hidden_and_finds_matches() {
+        let ws = tmp();
+        std::fs::write(ws.join("notes.txt"), "the quick brown fox\n").unwrap();
+        std::fs::create_dir_all(ws.join(".ssh")).unwrap();
+        std::fs::write(ws.join(".ssh/id"), "quick secret\n").unwrap();
+        let out = search_files(&ws, "quick");
+        assert!(out.contains("notes.txt"), "{out}");
+        assert!(!out.contains(".ssh"), "hidden dir must be skipped: {out}");
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    #[test]
+    fn memory_round_trips() {
+        let ws = tmp();
+        assert_eq!(memory_op(&ws, "list", "", "").unwrap(), "(memory is empty)");
+        memory_op(&ws, "set", "goal", "ship it").unwrap();
+        assert_eq!(memory_op(&ws, "get", "goal", "").unwrap(), "ship it");
+        assert_eq!(memory_op(&ws, "list", "", "").unwrap(), "goal");
+        memory_op(&ws, "delete", "goal", "").unwrap();
+        assert_eq!(memory_op(&ws, "get", "goal", "").unwrap(), "(no memory at key goal)");
+        std::fs::remove_dir_all(&ws).ok();
     }
 }

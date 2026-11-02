@@ -875,7 +875,7 @@ impl Node {
         });
         tokio::spawn(async move {
             let _ = kernel
-                .ask_in(&agent, &session, &text, None, TrustState::operator(), approver.as_ref(), &cancel)
+                .ask_with_fallback(&agent, &session, &text, None, TrustState::operator(), approver.as_ref(), &cancel)
                 .await;
             // The node prunes `running` on the TurnFinished event.
         });
