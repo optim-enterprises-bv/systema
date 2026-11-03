@@ -37,6 +37,8 @@ enum Cmd {
     Propose,
     /// Show the task board: recent tasks agents delegated to each other, with status.
     Tasks,
+    /// List persisted sessions, or print one session's transcript.
+    Session { key: Option<String> },
     /// List scheduled jobs (from schedules.toml); with a name, run that job now.
     Schedule { name: Option<String> },
     /// Search the shared knowledge base for notes/docs agents have saved.
@@ -226,6 +228,36 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Tasks => {
             let tasks = systema_kernel::tasks::list(&home, 50);
             println!("{}", systema_kernel::tasks::render(&tasks));
+        }
+        Cmd::Session { key } => {
+            let dir = home.join("sessions");
+            match key {
+                None => {
+                    let mut any = false;
+                    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                        if let Some(name) = e.file_name().to_str().and_then(|n| n.strip_suffix(".json")) {
+                            println!("{name}");
+                            any = true;
+                        }
+                    }
+                    if !any {
+                        println!("no persisted sessions in {}", dir.display());
+                    }
+                }
+                Some(k) => {
+                    let path = dir.join(format!("{}.json", k.replace(['/', '\\'], "_")));
+                    match systema_kernel::session::Session::load(&path) {
+                        Some(s) => {
+                            for m in s.messages() {
+                                let body = m.content.unwrap_or_else(|| "(tool call)".into());
+                                let body: String = body.chars().take(2000).collect();
+                                println!("### {}\n{}\n", m.role, body.trim());
+                            }
+                        }
+                        None => anyhow::bail!("no persisted session `{k}` at {}", path.display()),
+                    }
+                }
+            }
         }
         Cmd::Schedule { name } => {
             let jobs = systema_kernel::schedule::load(&home);

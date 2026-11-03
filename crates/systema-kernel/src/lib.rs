@@ -474,10 +474,20 @@ impl Kernel {
         // Tell the agent, in its (cache-stable) system prompt, where it is and what it can
         // reach — otherwise it guesses paths and wastes turns on denied list_dir/read_file.
         let sys_prompt = self.system_prompt_for(m);
+        let path = self.session_path(session_key);
         let session = {
             let mut s = self.sessions.lock().await;
             let fresh = || Arc::new(Mutex::new(Session::new(sys_prompt.clone(), initial_trust)));
-            let entry = s.entry(session_key.to_string()).or_insert_with(fresh);
+            if !s.contains_key(session_key) {
+                // Not in memory: reuse a persisted session, but only if its system prompt still
+                // matches (a changed manifest/working-context must start a fresh, cache-coherent one).
+                let restored = Session::load(&path)
+                    .filter(|sess| sess.system_prompt() == Some(sys_prompt.as_str()))
+                    .map(|sess| Arc::new(Mutex::new(sess)))
+                    .unwrap_or_else(fresh);
+                s.insert(session_key.to_string(), restored);
+            }
+            let entry = s.get_mut(session_key).expect("just inserted");
             if entry.try_lock().is_ok_and(|g| g.approx_tokens() > SESSION_TOKEN_BUDGET) {
                 *entry = fresh();
             }
@@ -489,7 +499,7 @@ impl Kernel {
         self.turn_walls.lock().await.remove(session_key);
         session.push_user(prompt);
         self.emit(Some(agent), Some(session_key), EventKind::TurnStarted { prompt: prompt.to_string() });
-        match self.run_loop(m, session_key, &mut session, priority.unwrap_or(m.priority), approver, cancel).await {
+        let result = match self.run_loop(m, session_key, &mut session, priority.unwrap_or(m.priority), approver, cancel).await {
             Ok(answer) => {
                 self.emit(Some(agent), Some(session_key), EventKind::TurnFinished { ok: true, text: answer.clone() });
                 Ok(answer)
@@ -500,7 +510,19 @@ impl Kernel {
                 self.emit(Some(agent), Some(session_key), EventKind::TurnFinished { ok: false, text: format!("{e:#}") });
                 Err(e)
             }
+        };
+        // Persist the (well-formed) session so it survives a node restart.
+        if let Err(e) = session.save(&path) {
+            warn!(session = %session_key, "could not persist session: {e}");
         }
+        result
+    }
+
+    /// Where a session is persisted. The key (agent, `agent@peer`, `task:<id>`, `sched:<name>`)
+    /// is filename-safe except for `/`, which is replaced.
+    fn session_path(&self, session_key: &str) -> PathBuf {
+        let safe = session_key.replace(['/', '\\'], "_");
+        self.config.home.join("sessions").join(format!("{safe}.json"))
     }
 
     #[allow(clippy::too_many_arguments)]

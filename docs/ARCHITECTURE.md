@@ -48,6 +48,10 @@ Systema applies it in the kernel:
   outbound (the reply goes to the stranger), so a stranger can never get your private data back through an
   agent without you approving it.
 - **Workspaces.** Each agent has `~/.systema/workspaces/<agent>/`, always readable and writable, not private.
+- **Session persistence.** Each session is saved to `~/.systema/sessions/<key>.json` after every turn and restored
+  on the next turn (when the agent's system prompt still matches), so context — and titan-engine's prefix cache —
+  survive a node restart. The session's `TrustState` is persisted with it, so a restored session keeps whatever
+  taint it had accrued. Still append-only and replaced, not rewritten, past the token budget.
 - **File tools.** `read_file`, `list_dir`, `write_file`, `patch` (in-place edit of a unique snippet) and
   `search_files` (recursive substring search of names and text contents, skipping hidden files) all go through
   the broker's path checks: canonicalized, confined to the manifest's `fs_read`/`fs_write`, never into a

@@ -53,7 +53,7 @@ impl ChatMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     system: ChatMessage,
     turns: Vec<ChatMessage>,
@@ -98,6 +98,26 @@ impl Session {
         };
         (len(&self.system) + self.turns.iter().map(len).sum::<usize>()) / 4
     }
+
+    /// The system prompt this session was created with (to detect a changed manifest on reload).
+    pub fn system_prompt(&self) -> Option<&str> {
+        self.system.content.as_deref()
+    }
+
+    /// Persist the session to `path` (atomic via a temp file + rename).
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        std::fs::rename(&tmp, path)
+    }
+
+    /// Load a session from `path`, or `None` if it is missing or unreadable.
+    pub fn load(path: &std::path::Path) -> Option<Self> {
+        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok())
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +134,20 @@ mod tests {
         s.push_user("next");
         let after = s.messages();
         assert_eq!(&after[..before.len()], &before[..]);
+    }
+
+    #[test]
+    fn saves_and_restores_across_restart() {
+        let dir = std::env::temp_dir().join(format!("systema-sess-{}", systema_proto::random_id()));
+        let path = dir.join("operator.json");
+        let mut s = Session::new("you are operator", TrustState::operator());
+        s.push_user("remember x=42");
+        s.push_assistant("noted");
+        s.save(&path).unwrap();
+        let back = Session::load(&path).expect("reloads");
+        assert_eq!(back.messages(), s.messages());
+        assert_eq!(back.system_prompt(), Some("you are operator"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
