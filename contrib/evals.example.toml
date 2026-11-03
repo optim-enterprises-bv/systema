@@ -1,0 +1,22 @@
+# Example eval suite. Copy to $SYSTEMA_HOME/evals.toml (default ~/.systema/) and edit, then
+# `systema eval` (or `systema eval <name>`). Each eval runs one turn and checks the answer with
+# case-insensitive substring assertions — keep them lenient (match the gist, not exact wording).
+
+[[eval]]
+name = "disk-free"
+agent = "operator"
+prompt = "How much disk space is free on the main filesystem? Reply in one short line."
+expect = ["free"]
+expect_absent = ["error", "denied", "cannot"]
+
+[[eval]]
+name = "code-review-catches-bug"
+agent = "coder"
+prompt = "Does this function have a bug? Answer briefly. fn add(a: i32, b: i32) -> i32 { a - b }"
+expect = ["subtract"]        # it should notice `add` actually subtracts
+
+[[eval]]
+name = "routing-stays-local"
+# no agent → routed like `systema do`; must not leak that it can't do local work
+prompt = "List the files in my home directory."
+expect_absent = ["no agent", "cannot", "not permitted"]

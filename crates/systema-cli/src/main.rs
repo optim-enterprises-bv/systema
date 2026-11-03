@@ -39,6 +39,8 @@ enum Cmd {
     Tasks,
     /// List persisted sessions, or print one session's transcript.
     Session { key: Option<String> },
+    /// Run the eval suite (from evals.toml); optionally just one by name.
+    Eval { name: Option<String> },
     /// List scheduled jobs (from schedules.toml); with a name, run that job now.
     Schedule { name: Option<String> },
     /// Search the shared knowledge base for notes/docs agents have saved.
@@ -228,6 +230,46 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Tasks => {
             let tasks = systema_kernel::tasks::list(&home, 50);
             println!("{}", systema_kernel::tasks::render(&tasks));
+        }
+        Cmd::Eval { name } => {
+            let k = Kernel::new(Config::load(&home)?)?;
+            let evals: Vec<_> = systema_kernel::evals::load(&home)
+                .into_iter()
+                .filter(|e| name.as_ref().is_none_or(|n| &e.name == n))
+                .collect();
+            if evals.is_empty() {
+                anyhow::bail!("no evals to run (define them in {}/evals.toml)", home.display());
+            }
+            let (mut passed, mut failed) = (0, 0);
+            for e in &evals {
+                match k.run_eval(e, &TerminalApprover).await {
+                    Ok(o) => {
+                        if o.pass {
+                            passed += 1;
+                            println!("PASS  {:<20} [{}]", o.name, o.agent);
+                        } else {
+                            failed += 1;
+                            let mut why = Vec::new();
+                            if !o.missing.is_empty() {
+                                why.push(format!("missing {:?}", o.missing));
+                            }
+                            if !o.forbidden.is_empty() {
+                                why.push(format!("forbidden {:?}", o.forbidden));
+                            }
+                            println!("FAIL  {:<20} [{}]  {}", o.name, o.agent, why.join("; "));
+                            println!("      → {}", o.answer.replace('\n', " ").chars().take(160).collect::<String>());
+                        }
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        println!("ERROR {:<20} {err:#}", e.name);
+                    }
+                }
+            }
+            println!("\n{passed} passed, {failed} failed");
+            if failed > 0 {
+                std::process::exit(1);
+            }
         }
         Cmd::Session { key } => {
             let dir = home.join("sessions");

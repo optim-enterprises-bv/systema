@@ -6,6 +6,7 @@ pub mod board;
 pub mod bus;
 pub mod capability;
 pub mod config;
+pub mod evals;
 pub mod events;
 pub mod inference;
 pub mod kb;
@@ -767,6 +768,20 @@ impl Kernel {
             Ok(Err(_)) => anyhow::bail!("the swarm gateway dropped the request"),
             Err(_) => anyhow::bail!("the remote agent did not respond within {}s", REMOTE_DELEGATE_TIMEOUT.as_secs()),
         }
+    }
+
+    /// Run one eval: ask its agent (or route the prompt) in a throwaway `eval:<name>` session,
+    /// then check the answer against the eval's expectations.
+    pub async fn run_eval(&self, eval: &evals::Eval, approver: &dyn Approver) -> anyhow::Result<evals::Outcome> {
+        let agent = match &eval.agent {
+            Some(a) => a.clone(),
+            None => self.route(&eval.prompt).await?,
+        };
+        let session = format!("eval:{}", eval.name);
+        let answer = self
+            .ask_with_fallback(&agent, &session, &eval.prompt, Some(Priority::Interactive), TrustState::operator(), approver, &CancellationToken::new())
+            .await?;
+        Ok(evals::check(eval, &agent, &answer))
     }
 
     /// Search the web via the operator-configured SearXNG-compatible endpoint. Returns a short
