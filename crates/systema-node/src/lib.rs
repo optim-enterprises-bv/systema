@@ -46,6 +46,17 @@ use tracing::{debug, info, warn};
 use control::{Control, ControlReply};
 
 pub const CARDS_TOPIC: &str = "systema/v1/cards";
+/// Gossip topic for the swarm-wide blackboard (board posts shared across nodes).
+pub const BOARD_TOPIC: &str = "systema/v1/board";
+
+/// A board post gossiped to the swarm. Signed by the originating node; peers add it to their local
+/// board marked as a remote (untrusted) author.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BoardMsg {
+    pub author: String,
+    pub topic: String,
+    pub text: String,
+}
 pub const KAD_PROTOCOL: StreamProtocol = StreamProtocol::new("/systema/kad/1.0.0");
 pub const IDENTIFY_PROTOCOL: &str = "/systema/id/1.0.0";
 /// Remote agents run on a shared GPU at background priority; give them time.
@@ -387,6 +398,7 @@ impl Node {
 
         let topic = gossipsub::IdentTopic::new(CARDS_TOPIC);
         self.swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
+        self.swarm.behaviour_mut().gossipsub.subscribe(&gossipsub::IdentTopic::new(BOARD_TOPIC))?;
         self.provide_skills(true);
 
         let (ctl_tx, mut ctl_rx) = mpsc::channel(16);
@@ -427,11 +439,44 @@ impl Node {
 
     /// Prune finished operator turns so `Sessions`/`Cancel` reflect reality.
     fn on_kernel_event(&mut self, ev: Event) {
-        if let EventKind::TurnFinished { .. } = ev.kind {
-            if let Some(session) = ev.session {
-                self.running.remove(&session);
+        match &ev.kind {
+            EventKind::TurnFinished { .. } => {
+                if let Some(session) = ev.session {
+                    self.running.remove(&session);
+                }
             }
+            // A local agent posted to the board: gossip it to the swarm's shared blackboard.
+            EventKind::BoardPosted { topic, text } => {
+                let msg = BoardMsg {
+                    author: ev.agent.clone().unwrap_or_else(|| "agent".into()),
+                    topic: topic.clone(),
+                    text: text.clone(),
+                };
+                if let Ok(bytes) = Signed::sign(&self.keypair, msg).and_then(|s| s.to_json()) {
+                    let t = gossipsub::IdentTopic::new(BOARD_TOPIC);
+                    match self.swarm.behaviour_mut().gossipsub.publish(t, bytes) {
+                        Ok(_) | Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {}
+                        Err(e) => debug!("publish board post: {e}"),
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// A board post gossiped by another node: verify it and add it to our local board as a remote
+    /// (untrusted) author, so our agents see the swarm's blackboard.
+    fn on_board_gossip(&mut self, bytes: &[u8]) {
+        let Ok(signed) = Signed::<BoardMsg>::from_json(bytes) else { return };
+        let Ok(signer) = signed.verify(DEFAULT_MAX_AGE_MS) else { return };
+        if self.trust.policy().blocked.contains(&signer.to_string()) {
+            return;
+        }
+        let m = signed.payload;
+        let peer = signer.to_string();
+        let author = format!("{}@{}", m.author, &peer[..peer.len().min(10)]);
+        // public = true marks it untrusted to local readers (it came from a stranger's node).
+        let _ = systema_kernel::board::post(&self.home, &author, true, false, &m.topic, &m.text);
     }
 
     // ---------------------------------------------------------------------------------
@@ -941,17 +986,29 @@ impl Node {
         let blocked = self.trust.policy().blocked.clone();
         // Providers of this skill, most capable (largest advertised context) first. A single
         // delegation takes the most capable; parallel fan-out round-robins to spread over nodes.
+        // Contract-net-style award: among providers of the skill, prefer a currently-connected
+        // peer (liveness — a dead peer never wins), then best reputation, then most capable
+        // (largest advertised context). Each candidate is scored (connected, reputation, context).
         let rep_score = |peer: &PeerId| self.reputation.get(&peer.to_string()).map_or(0.5, Rep::score);
-        let mut ranked: Vec<(f64, u32, PeerId, String)> = self
+        let candidates: Vec<(PeerId, u32, String)> = self
             .discovered
             .iter()
             .filter(|(peer, _)| !blocked.contains(&peer.to_string()))
-            .flat_map(|(peer, cards)| cards.iter().map(move |c| (c.max_context.unwrap_or(0), *peer, c)))
+            .flat_map(|(peer, cards)| cards.iter().map(move |c| (*peer, c.max_context.unwrap_or(0), c)))
             .filter(|(_, _, c)| c.skills.iter().any(|s| s.id == skill))
-            .map(|(ctx, peer, c)| (rep_score(&peer), ctx, peer, c.name.clone()))
+            .map(|(peer, ctx, c)| (peer, ctx, c.name.clone()))
             .collect();
-        // Best reputation first, then most capable (largest context).
-        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.cmp(&a.1)));
+        let mut scored: Vec<(bool, f64, u32, PeerId, String)> = candidates
+            .into_iter()
+            .map(|(peer, ctx, name)| (self.swarm.is_connected(&peer), rep_score(&peer), ctx, peer, name))
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0) // connected first
+                .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)) // reputation
+                .then(b.2.cmp(&a.2)) // capability
+        });
+        // Downstream selection (single pick vs. round-robin) uses (_, _, peer, name) tuples.
+        let ranked: Vec<(f64, u32, PeerId, String)> = scored.into_iter().map(|(_c, r, ctx, p, n)| (r, ctx, p, n)).collect();
         let chosen = if spread && !ranked.is_empty() {
             let i = self.rr_cursor.entry(skill.clone()).or_insert(0);
             let pick = ranked[*i % ranked.len()].clone();
@@ -1232,6 +1289,8 @@ impl Node {
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                 if message.topic.as_str() == CARDS_TOPIC {
                     self.on_card(message.source, &message.data);
+                } else if message.topic.as_str() == BOARD_TOPIC {
+                    self.on_board_gossip(&message.data);
                 }
             }
             SwarmEvent::Behaviour(BehaviourEvent::A2a(request_response::Event::Message { peer, message, .. })) => {

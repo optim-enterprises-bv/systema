@@ -101,6 +101,10 @@ Systema applies it in the kernel:
   OpenAI-compatible service (`contrib/npu-embeddings/`, OpenVINO on the Intel NPU) so it never contends with the
   GPU. Same provenance model as the board: a search carries the *private* leg, plus *untrusted* when the store
   holds any public/tainted entry.
+- **Swarm blackboard.** A local board post from a non-tainted agent is gossiped to the swarm (signed, topic
+  `systema/v1/board`); receiving nodes add it to their local board marked as a remote author (`public`, so
+  readers treat it as untrusted), giving agents on different nodes one shared blackboard. Remote posts are
+  written straight to the board, never re-emitted, so they don't loop.
 - **Shared message board.** `board_post`/`board_read` let board-capable agents coordinate through one shared log
   (`board.jsonl`). Because any agent — including a swarm-facing one, or one in a tainted session — can post, the
   board is treated as untrusted-and-private input: a read carries the *private* leg (it may hold operator

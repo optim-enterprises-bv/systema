@@ -716,14 +716,14 @@ impl Kernel {
             ToolRequest::Mcp { server, tool, arguments } => self.call_mcp(server, tool, arguments).await,
             // The board is shared state needing agent/session context, so it is handled here
             // (like MCP) rather than in the per-agent workspace sandbox.
-            ToolRequest::BoardPost { topic, text } => board::post(
-                &self.config.home,
-                &m.name,
-                m.capabilities.public,
-                session.trust.untrusted,
-                topic,
-                text,
-            ),
+            ToolRequest::BoardPost { topic, text } => {
+                let r = board::post(&self.config.home, &m.name, m.capabilities.public, session.trust.untrusted, topic, text);
+                // A local (non-tainted) post is gossiped to the swarm's shared blackboard.
+                if r.is_ok() && !session.trust.untrusted {
+                    self.emit(Some(&m.name), Some(session_key), EventKind::BoardPosted { topic: topic.clone(), text: text.clone() });
+                }
+                r
+            }
             ToolRequest::BoardRead { topic } => {
                 let posts = board::read(&self.config.home, topic.as_deref(), board::READ_LIMIT);
                 Ok(board::render(&posts))

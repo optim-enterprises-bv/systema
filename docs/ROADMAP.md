@@ -111,11 +111,13 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       must be present (else a public shell stays denied — enabling only ever *adds* isolation-safe
       capability). See `contrib/microvm/`. *Next: a filtered-network opt-in, and running public
       `exec` in the VM too.*
-- [~] **Higher-order swarm coordination.** *Reputation scoring shipped:* each node tracks how well
-      every peer serves its requests (Laplace-smoothed ok/fail, persisted to `reputation.json`),
-      `systema reputation` shows it, and cross-swarm delegation ranks providers by reputation first,
-      then capability. *Remaining: contract-net negotiation and a blackboard shared across peers
-      (the local board extended over A2A).*
+- [x] **Higher-order swarm coordination.** *Reputation scoring:* each node tracks how well every
+      peer serves its requests (`reputation.json`, `systema reputation`). *Blackboard over A2A:* a
+      local board post gossips to the swarm (signed, topic `systema/v1/board`); peers add it to
+      their board marked as a remote/untrusted author, so agents on different nodes share one board.
+      *Contract-net-style award:* cross-swarm delegation now prefers a currently-connected peer
+      (liveness), then reputation, then capability. *Remaining: a live bid round-trip (providers
+      quote load before the award).*
 - [x] **Context compaction** — past the token budget a session is now **summarized and re-seeded**
       with that brief (fast model, background priority) instead of being dropped, so long
       conversations keep their thread. Sub-agent isolation already holds: delegated turns run in
