@@ -51,11 +51,18 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       so heavy/long work routes to the bigger node. Fields are appended + skipped-when-empty, so
       older signed cards still verify.
 
-## Tier 1 — biggest leverage (make it an OS that *does* things)
-- [ ] **Parallel fan-out.** Run several delegations (local or remote) concurrently and merge
-      results. Across the swarm this uses *multiple nodes' GPUs at once* — N remote delegations run
-      in parallel on N machines, so it is high-value for heterogeneous swarms (not GPU-bound on one
-      box). Round-robin remote providers to spread load.
+- [x] **Parallel fan-out** (`delegate_parallel { skill, tasks }`) — fans several independent tasks
+      to swarm agents offering a skill, concurrently, round-robined across providers so they run on
+      different nodes' GPUs at once; results come back merged and ordered, each recorded on the task
+      board. This is where heterogeneous swarm compute pays off (not GPU-bound on one box).
+
+**Tier 1 is complete.** What remains below is Tier 2+ and the parked sandbox.
+
+## Deferred / blocked
+- [ ] **Vector retrieval for the KB** — *blocked:* needs an embedding model served by titan-engine.
+      The KB works on BM25 today and is shaped to drop a vector index in behind the same tools.
+- [ ] **Local parallel delegation** — low value on a single GPU (generation serializes); the swarm
+      path above is the one that matters.
 - [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
       to the file-change and board-post triggers already shipped.
 - [ ] **Vector retrieval for the KB.** Add embeddings behind titan-engine and a vector index, so

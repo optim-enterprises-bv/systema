@@ -57,6 +57,9 @@ pub const REMOTE_DELEGATE_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct RemoteCall {
     pub skill: String,
     pub task: String,
+    /// Spread across providers (round-robin) instead of always the most capable — used by
+    /// parallel fan-out so N tasks land on N different nodes.
+    pub spread: bool,
     pub reply: oneshot::Sender<Result<String, String>>,
 }
 
@@ -666,7 +669,7 @@ impl Kernel {
             ToolRequest::TaskList => Ok(tasks::render(&tasks::list(&self.config.home, 50))),
             ToolRequest::DelegateRemote { skill, task } => {
                 let id = tasks::create(&self.config.home, &m.name, &format!("swarm:{skill}"), task).ok();
-                let out = self.remote_delegate(skill, task).await;
+                let out = self.remote_delegate(skill, task, false).await;
                 if let Some(id) = id {
                     match &out {
                         Ok(a) => tasks::finish(&self.config.home, &id, true, a),
@@ -675,6 +678,7 @@ impl Kernel {
                 }
                 out.map(|text| format!("[a swarm agent for `{skill}` answered]\n{text}"))
             }
+            ToolRequest::DelegateParallel { skill, tasks } => Ok(self.run_parallel_remote(&m.name, skill, tasks).await),
             ToolRequest::KbAdd { title, source, text } => {
                 kb::add(&self.config.home, title, source, &m.name, m.capabilities.public, session.trust.untrusted, text)
                     .map(|n| format!("added {n} chunk(s) to the knowledge base under `{title}`"))
@@ -703,12 +707,12 @@ impl Kernel {
     /// Delegate a task to an agent on another swarm node offering `skill`, and return its answer.
     /// The node finds a provider among discovered peers and runs the request over A2A. The result
     /// is untrusted content from a stranger (handled as such by the broker's `FETCH` legs).
-    async fn remote_delegate(&self, skill: &str, task: &str) -> anyhow::Result<String> {
+    async fn remote_delegate(&self, skill: &str, task: &str, spread: bool) -> anyhow::Result<String> {
         let Some(tx) = self.swarm.get() else {
             anyhow::bail!("cross-swarm delegation needs a running node; none is attached");
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(RemoteCall { skill: skill.to_string(), task: task.to_string(), reply: reply_tx })
+        tx.send(RemoteCall { skill: skill.to_string(), task: task.to_string(), spread, reply: reply_tx })
             .await
             .map_err(|_| anyhow::anyhow!("the swarm gateway is closed"))?;
         match tokio::time::timeout(REMOTE_DELEGATE_TIMEOUT, reply_rx).await {
@@ -717,6 +721,33 @@ impl Kernel {
             Ok(Err(_)) => anyhow::bail!("the swarm gateway dropped the request"),
             Err(_) => anyhow::bail!("the remote agent did not respond within {}s", REMOTE_DELEGATE_TIMEOUT.as_secs()),
         }
+    }
+
+    /// Fan out `tasks` to swarm agents offering `skill`, concurrently (round-robined across
+    /// providers so N tasks use N nodes' GPUs at once), and return the merged, ordered results.
+    /// Each sub-task is recorded on the task board.
+    async fn run_parallel_remote(&self, creator: &str, skill: &str, tasks: &[String]) -> String {
+        let futures = tasks.iter().enumerate().map(|(i, task)| async move {
+            let id = tasks::create(&self.config.home, creator, &format!("swarm:{skill}"), task).ok();
+            let out = self.remote_delegate(skill, task, true).await;
+            if let Some(id) = id {
+                match &out {
+                    Ok(a) => tasks::finish(&self.config.home, &id, true, a),
+                    Err(e) => tasks::finish(&self.config.home, &id, false, &format!("{e:#}")),
+                }
+            }
+            (i, out)
+        });
+        let mut results = futures::future::join_all(futures).await;
+        results.sort_by_key(|(i, _)| *i);
+        results
+            .into_iter()
+            .map(|(i, out)| match out {
+                Ok(a) => format!("### task {} ({skill})\n{a}", i + 1),
+                Err(e) => format!("### task {} ({skill}) — FAILED: {e:#}", i + 1),
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     /// Run a delegated sub-task: record it on the task board, run a full turn for `assignee`
