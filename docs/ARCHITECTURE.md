@@ -51,7 +51,11 @@ Systema applies it in the kernel:
 - **Session persistence.** Each session is saved to `~/.systema/sessions/<key>.json` after every turn and restored
   on the next turn (when the agent's system prompt still matches), so context — and titan-engine's prefix cache —
   survive a node restart. The session's `TrustState` is persisted with it, so a restored session keeps whatever
-  taint it had accrued. Still append-only and replaced, not rewritten, past the token budget.
+  taint it had accrued.
+- **Context compaction.** Append-only within a session; past the token budget the session is summarized by the
+  fast model and a fresh one is seeded with that brief (keeping the same trust), rather than dropped — so a long
+  conversation keeps its thread instead of resetting. Delegated sub-tasks already run in their own
+  `task:<id>` sessions, so a sub-agent's context never bleeds into the caller's.
 - **File tools.** `read_file`, `list_dir`, `write_file`, `patch` (in-place edit of a unique snippet) and
   `search_files` (recursive substring search of names and text contents, skipping hidden files) all go through
   the broker's path checks: canonicalized, confined to the manifest's `fs_read`/`fs_write`, never into a

@@ -424,6 +424,29 @@ impl Kernel {
         )
     }
 
+    /// Summarize an over-budget session and seed a fresh one with that summary, keeping its trust.
+    async fn compact(&self, old: &Session, sys_prompt: &str) -> Session {
+        let summary = self.summarize(old).await.unwrap_or_default();
+        let mut fresh = Session::new(sys_prompt, old.trust);
+        if !summary.trim().is_empty() {
+            fresh.push_assistant(format!("[Summary of our earlier conversation, for context]\n{}", summary.trim()));
+        }
+        fresh
+    }
+
+    /// Ask the fast model to condense a session into a compact brief.
+    async fn summarize(&self, session: &Session) -> anyhow::Result<String> {
+        let mut messages = session.messages();
+        messages.push(ChatMessage::text(
+            "user",
+            "Summarize the key facts, decisions and state from the conversation above as a compact \
+             brief, so it can continue without the full history. Keep names, paths, numbers and \
+             decisions; drop the chatter. A few short paragraphs at most.",
+        ));
+        let _slot = self.scheduler.acquire(Priority::Background).await;
+        self.inference.chat(ModelTier::Fast, &messages).await
+    }
+
     /// The agent's system prompt, with a kernel-generated "working context" appended so the
     /// model knows its workspace and its read/write roots instead of guessing paths.
     fn system_prompt_for(&self, m: &AgentManifest) -> String {
@@ -492,13 +515,16 @@ impl Kernel {
                     .unwrap_or_else(fresh);
                 s.insert(session_key.to_string(), restored);
             }
-            let entry = s.get_mut(session_key).expect("just inserted");
-            if entry.try_lock().is_ok_and(|g| g.approx_tokens() > SESSION_TOKEN_BUDGET) {
-                *entry = fresh();
-            }
-            entry.clone()
+            s.get_mut(session_key).expect("just inserted").clone()
         };
         let mut session = session.lock().await;
+        // Past the budget, compact rather than drop: summarize the old session and seed a fresh
+        // one with that summary, so long conversations keep their thread instead of resetting.
+        if session.approx_tokens() > SESSION_TOKEN_BUDGET {
+            let compacted = self.compact(&session, &sys_prompt).await;
+            self.emit(Some(agent), Some(session_key), EventKind::Note { text: "compacted session (summarized earlier context)".into() });
+            *session = compacted;
+        }
         let checkpoint = session.clone();
         // Fresh turn: clear any capability-wall mark and step buffer from a previous turn.
         self.turn_walls.lock().await.remove(session_key);
