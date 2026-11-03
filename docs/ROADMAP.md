@@ -96,8 +96,10 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 - [ ] **Browser / computer-use** — drive a browser or desktop for tasks beyond the filesystem.
 - [x] **Session persistence** — sessions are saved to `sessions/<key>.json` after every turn and
       restored on the next turn, so context and the prefix cache survive a node restart.
-      `systema session [key]` lists/prints transcripts. *Remaining: observability/replay — a
-      structured run history and tracing (OpenTelemetry-style) over the audit log + event stream.*
+      `systema session [key]` lists/prints transcripts.
+- [x] **Observability / replay** — every turn is recorded to `runs.jsonl` (prompt, each tool call +
+      outcome, final answer, timing, trust). `systema history` lists recent turns; `systema replay
+      <id>` shows one turn's full trace. *Next: OpenTelemetry export for external tracing.*
 - [x] **Evals** — `systema eval` runs an `evals.toml` suite (one turn per eval, case-insensitive
       `expect`/`expect_absent` substring assertions), so agent changes can be regression-tested.
       See `contrib/evals.example.toml`. *Next: an LLM-judge assertion and wiring into `propose`.*

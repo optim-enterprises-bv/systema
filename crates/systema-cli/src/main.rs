@@ -41,6 +41,10 @@ enum Cmd {
     Session { key: Option<String> },
     /// Run the eval suite (from evals.toml); optionally just one by name.
     Eval { name: Option<String> },
+    /// Recent turns (prompt, tools, status, timing); optionally filter by agent.
+    History { agent: Option<String> },
+    /// Show one turn's full trace (prompt → each tool call/result → answer) by id.
+    Replay { id: String },
     /// List scheduled jobs (from schedules.toml); with a name, run that job now.
     Schedule { name: Option<String> },
     /// Search the shared knowledge base for notes/docs agents have saved.
@@ -271,6 +275,14 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::History { agent } => {
+            let runs = systema_kernel::runs::list(&home, agent.as_deref(), 40);
+            println!("{}", systema_kernel::runs::render_list(&runs));
+        }
+        Cmd::Replay { id } => match systema_kernel::runs::get(&home, &id) {
+            Some(run) => println!("{}", systema_kernel::runs::render_full(&run)),
+            None => anyhow::bail!("no run matching `{id}` (see `systema history`)"),
+        },
         Cmd::Session { key } => {
             let dir = home.join("sessions");
             match key {
