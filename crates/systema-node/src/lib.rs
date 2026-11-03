@@ -199,6 +199,8 @@ pub struct Node {
     pending_approvals: PendingApprovals,
     /// Last-run times for scheduled jobs (persisted), so restarts don't double-fire.
     sched_state: systema_kernel::schedule::State,
+    /// Per-skill round-robin cursor for spreading parallel delegations across providers.
+    rr_cursor: HashMap<String, usize>,
 }
 
 impl Node {
@@ -301,6 +303,7 @@ impl Node {
             running: HashMap::new(),
             pending_approvals: Arc::default(),
             sched_state,
+            rr_cursor: HashMap::new(),
         })
     }
 
@@ -904,23 +907,32 @@ impl Node {
     /// Handle a cross-swarm delegation from the kernel: find a discovered peer whose agent offers
     /// the requested skill, send it the task over A2A, and forward its reply back to the kernel.
     fn on_remote_call(&mut self, call: systema_kernel::RemoteCall) {
-        let systema_kernel::RemoteCall { skill, task, reply } = call;
+        let systema_kernel::RemoteCall { skill, task, spread, reply } = call;
         if task.len() > MAX_REQUEST_TEXT {
             let _ = reply.send(Err(format!("task text over {MAX_REQUEST_TEXT} bytes")));
             return;
         }
         let blocked = self.trust.policy().blocked.clone();
-        // Among discovered peers advertising this skill, prefer the most capable node — the one
-        // advertising the largest context window — so heavy/long work goes to the bigger GPU.
-        let found = self
+        // Providers of this skill, most capable (largest advertised context) first. A single
+        // delegation takes the most capable; parallel fan-out round-robins to spread over nodes.
+        let mut ranked: Vec<(u32, PeerId, String)> = self
             .discovered
             .iter()
             .filter(|(peer, _)| !blocked.contains(&peer.to_string()))
-            .flat_map(|(peer, cards)| cards.iter().map(move |c| (*peer, c)))
-            .filter(|(_, c)| c.skills.iter().any(|s| s.id == skill))
-            .max_by_key(|(_, c)| c.max_context.unwrap_or(0))
-            .map(|(peer, c)| (peer, c.name.clone()));
-        let Some((peer, agent)) = found else {
+            .flat_map(|(peer, cards)| cards.iter().map(move |c| (c.max_context.unwrap_or(0), *peer, c)))
+            .filter(|(_, _, c)| c.skills.iter().any(|s| s.id == skill))
+            .map(|(ctx, peer, c)| (ctx, peer, c.name.clone()))
+            .collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0)); // most capable first
+        let chosen = if spread && !ranked.is_empty() {
+            let i = self.rr_cursor.entry(skill.clone()).or_insert(0);
+            let pick = ranked[*i % ranked.len()].clone();
+            *i = i.wrapping_add(1);
+            Some((pick.1, pick.2))
+        } else {
+            ranked.first().map(|(_, p, n)| (*p, n.clone()))
+        };
+        let Some((peer, agent)) = chosen else {
             let _ = reply.send(Err(format!(
                 "no known swarm agent offers skill `{skill}` (run `find {skill}` or wait for discovery)"
             )));

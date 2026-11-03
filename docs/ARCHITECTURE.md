@@ -75,6 +75,10 @@ Systema applies it in the kernel:
   signed cards still verify byte-for-byte. `peers` and `find` display them, and cross-swarm delegation uses them
   to route: among providers of a skill, `delegate_remote` picks the one advertising the **largest context
   window**, so long or heavy work goes to the more capable node rather than always running locally.
+- **Parallel fan-out.** `delegate_parallel { skill, tasks }` sends several independent tasks to swarm agents
+  offering `skill` concurrently, round-robining across discovered providers so N tasks run on N different nodes'
+  GPUs at once (the heterogeneous-swarm payoff — local generation is GPU-serialized, remote is not). Results come
+  back merged and ordered; each sub-task is a task-board entry. Same fetch legs and gating as `delegate_remote`.
 - **Cross-swarm delegation.** `delegate_remote { skill, task }` delegates to an agent on *another* node that
   advertises `skill`. Tools run in the kernel, which cannot touch the swarm, so the kernel holds a one-way
   channel to the node (`set_swarm`); the node finds a discovered provider and runs the task over the same signed

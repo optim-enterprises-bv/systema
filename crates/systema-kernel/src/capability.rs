@@ -83,6 +83,8 @@ pub enum ToolRequest {
     DelegateTask { agent: String, task: String },
     /// Delegate a task to an agent on another swarm node offering `skill`.
     DelegateRemote { skill: String, task: String },
+    /// Fan out several tasks to swarm agents offering `skill`, concurrently.
+    DelegateParallel { skill: String, tasks: Vec<String> },
     /// Read the task board (recent delegated tasks and their status).
     TaskList,
     /// Add a document/note to the shared knowledge base.
@@ -109,6 +111,7 @@ impl ToolRequest {
             ToolRequest::BoardRead { .. } => "board_read",
             ToolRequest::DelegateTask { .. } => "delegate_task",
             ToolRequest::DelegateRemote { .. } => "delegate_remote",
+            ToolRequest::DelegateParallel { .. } => "delegate_parallel",
             ToolRequest::TaskList => "task_list",
             ToolRequest::KbAdd { .. } => "kb_add",
             ToolRequest::KbSearch { .. } => "kb_search",
@@ -135,6 +138,7 @@ impl ToolRequest {
             },
             ToolRequest::DelegateTask { agent, task } => format!("delegate_task → {agent}: {}", task.chars().take(80).collect::<String>()),
             ToolRequest::DelegateRemote { skill, task } => format!("delegate_remote [{skill}]: {}", task.chars().take(70).collect::<String>()),
+            ToolRequest::DelegateParallel { skill, tasks } => format!("delegate_parallel [{skill}] ×{}", tasks.len()),
             ToolRequest::TaskList => "task_list".into(),
             ToolRequest::KbAdd { title, .. } => format!("kb_add {title}"),
             ToolRequest::KbSearch { query } => format!("kb_search {:?}", query.chars().take(60).collect::<String>()),
@@ -387,6 +391,19 @@ impl Broker {
                 if trust.untrusted {
                     return Checked::deny("cannot delegate to the swarm from a session holding untrusted content");
                 }
+                (GrantMode::Allow, FETCH, Target::Delegate)
+            }
+            ToolRequest::DelegateParallel { tasks, .. } => {
+                if !caps.delegate {
+                    return Checked::deny("this agent has no delegate capability");
+                }
+                if trust.untrusted {
+                    return Checked::deny("cannot delegate to the swarm from a session holding untrusted content");
+                }
+                if tasks.is_empty() {
+                    return Checked::deny("delegate_parallel needs at least one task");
+                }
+                // Same shape as delegate_remote: outbound + untrusted replies (fetch legs).
                 (GrantMode::Allow, FETCH, Target::Delegate)
             }
             ToolRequest::TaskList => {
@@ -791,6 +808,14 @@ mod tests {
         assert!(matches!(e.broker.check(&m, &after_read, &rem).decision, Decision::Ask { .. }));
         // Never from an already-untrusted session.
         assert!(matches!(e.broker.check(&m, &TrustState::remote(), &rem).decision, Decision::Deny(_)));
+
+        // Parallel fan-out: same gating/legs, and an empty task list is rejected.
+        let par = ToolRequest::DelegateParallel { skill: "code-review".into(), tasks: vec!["a".into(), "b".into()] };
+        let c = e.broker.check(&m, &TrustState::operator(), &par);
+        assert_eq!(c.decision, Decision::Allow);
+        assert!(c.legs.untrusted && c.legs.outbound);
+        let empty = ToolRequest::DelegateParallel { skill: "code-review".into(), tasks: vec![] };
+        assert!(matches!(e.broker.check(&m, &TrustState::operator(), &empty).decision, Decision::Deny(_)));
     }
 
     #[test]
