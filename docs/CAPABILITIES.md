@@ -135,7 +135,10 @@ inert text the operator applies by hand.
 
 - **`[inference]`** — `endpoint`, `fast_model`, `deep_model`, `max_concurrent`, `timeout_secs`,
   `temperature`, `top_p`; advertised capabilities `max_context`, `hardware`; embeddings
-  `embed_endpoint`, `embed_model` (see `contrib/npu-embeddings/`).
+  `embed_endpoint`, `embed_model` (see `contrib/npu-embeddings/`); cloud fallback `cloud_endpoint`,
+  `cloud_model` (API key read from `$SYSTEMA_CLOUD_API_KEY`) — used only when the local engine is
+  unreachable.
+- **`search_endpoint`** (top level) — SearXNG JSON endpoint for `web_search` (see `contrib/searxng/`).
 - **`[node]`** — `listen`, `bootstrap`, `mdns`, `announce_secs`, `gossip_cards`, `dht_server`,
   `relays`, `external_addrs`, `relay_server`, `[node.relay_limits]`, `[node.trust]`.
 - **MCP servers** — `[mcp.<name>]` with `command`, `args`, `env`, allowed `tools`, `ask_tools`,

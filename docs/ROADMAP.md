@@ -113,8 +113,10 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       with that brief (fast model, background priority) instead of being dropped, so long
       conversations keep their thread. Sub-agent isolation already holds: delegated turns run in
       their own `task:<id>` sessions. *Next: incremental compaction rather than a single summary.*
-- [ ] **Cloud-model fallback + vision** — overflow to a cloud model and multimodal input; today
-      titan-engine serves local fast/deep tiers only.
+- [x] **Cloud-model fallback** — when the local engine is unreachable, requests fall back to a
+      configured OpenAI-compatible `cloud_endpoint`/`cloud_model` (key from `$SYSTEMA_CLOUD_API_KEY`),
+      so the OS keeps working if titan-engine is down. *Remaining: vision/multimodal input, and
+      capability-based routing to the cloud for specific heavy tasks (not just on failure).*
 
 ## Principles that constrain all of the above
 - The broker is the only path to the host; the manifest is the ceiling.

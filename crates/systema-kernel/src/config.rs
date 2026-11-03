@@ -53,6 +53,13 @@ pub struct InferenceConfig {
     /// Model id to request from `embed_endpoint`.
     #[serde(default = "default_embed_model")]
     pub embed_model: String,
+    /// OpenAI-compatible endpoint to fall back to when the local engine is unreachable. Unset =
+    /// no fallback. The API key is read from `$SYSTEMA_CLOUD_API_KEY` (not stored in the config).
+    #[serde(default)]
+    pub cloud_endpoint: Option<String>,
+    /// Model id to request from `cloud_endpoint` (falls back to the tier's local model id).
+    #[serde(default)]
+    pub cloud_model: Option<String>,
 }
 
 fn default_embed_model() -> String {
@@ -139,6 +146,8 @@ impl Default for InferenceConfig {
             hardware: None,
             embed_endpoint: None,
             embed_model: default_embed_model(),
+            cloud_endpoint: None,
+            cloud_model: None,
         }
     }
 }
