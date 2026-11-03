@@ -41,9 +41,14 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       required. Same untrusted-by-provenance model as the board. *Next: a vector index when
       titan-engine serves an embedding model (the store is already shaped for it).*
 
+- [x] **Cross-swarm delegation** (`delegate_remote`) — an agent delegates a task to an agent on
+      another node that advertises the skill, over the signed A2A path, via a kernel→node bridge.
+      The reply is treated as untrusted outbound (fetch legs), gated by the Rule of Two and the
+      remote node's own trust gate. *Next: parallel fan-out of independent sub-tasks.*
+
 ## Tier 1 — biggest leverage (make it an OS that *does* things)
-- [ ] **Parallel + cross-swarm delegation.** Delegation is sequential and local today; add parallel
-      fan-out of independent sub-tasks and delegation to agents on other swarm nodes over A2A.
+- [ ] **Parallel delegation.** Fan out independent sub-tasks concurrently and merge results
+      (sequential today; limited benefit on a single GPU, more once work is I/O- or swarm-bound).
 - [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
       to the file-change and board-post triggers already shipped.
 - [ ] **Vector retrieval for the KB.** Add embeddings behind titan-engine and a vector index, so

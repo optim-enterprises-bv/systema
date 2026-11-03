@@ -26,6 +26,9 @@ Scaffold, phase 1–2. Works today:
   cards directly (`/systema/card/1.0.0`) and verifies them; works with mDNS and gossip off, through a bootstrap
   node (`scripts/e2e-dht-find.sh`). Point nodes at one with `bootstrap = ["/ip4/…/tcp/…/p2p/<id>"]` and run
   the bootstrap itself with `dht_server = "on"`.
+- **Cross-swarm delegation.** A local agent's `delegate_remote { skill, task }` finds an agent on another node
+  advertising that skill and runs the task there over the signed A2A path (subject to the remote's trust gate),
+  returning its answer — the reply is treated as untrusted outbound, so the Rule of Two applies.
 - **Relays for nodes behind NAT.** A public node can act as bootstrap + circuit relay; a node behind NAT reserves a
   slot on it and is advertised (DHT records and cards) at its `…/p2p-circuit/p2p/<id>` address, so others can reach
   it without port forwarding (`scripts/e2e-relay.sh`). Reservations are kept alive and re-requested if they lapse.
