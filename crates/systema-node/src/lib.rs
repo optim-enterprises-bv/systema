@@ -370,6 +370,9 @@ impl Node {
 
         let (ctl_tx, mut ctl_rx) = mpsc::channel(16);
         control::serve(&self.home, ctl_tx, self.kernel.event_sender())?;
+        // Bridge for cross-swarm delegation: the kernel's `delegate_remote` tool sends here.
+        let (remote_tx, mut remote_rx) = mpsc::channel::<systema_kernel::RemoteCall>(16);
+        self.kernel.set_swarm(remote_tx);
         let mut done_rx = self.done_rx.take().expect("run called twice");
         let mut kernel_events = self.kernel.subscribe();
 
@@ -388,6 +391,7 @@ impl Node {
                 _ = announce.tick() => if self.cfg.gossip_cards { self.announce(&topic) },
                 _ = housekeeping.tick() => { self.expire_finds(); self.tend_relays(); }
                 _ = schedules.tick() => self.check_schedules(),
+                Some(call) = remote_rx.recv() => self.on_remote_call(call),
                 Some((channel, response)) = done_rx.recv() => {
                     if self.swarm.behaviour_mut().a2a.send_response(channel, response).is_err() {
                         debug!("requester went away before the reply was ready");
@@ -895,6 +899,73 @@ impl Node {
             info!(job = %job.name, agent = %job.agent, "firing scheduled job");
             self.spawn_operator_turn(job.agent.clone(), session, job.prompt.clone());
         }
+    }
+
+    /// Handle a cross-swarm delegation from the kernel: find a discovered peer whose agent offers
+    /// the requested skill, send it the task over A2A, and forward its reply back to the kernel.
+    fn on_remote_call(&mut self, call: systema_kernel::RemoteCall) {
+        let systema_kernel::RemoteCall { skill, task, reply } = call;
+        if task.len() > MAX_REQUEST_TEXT {
+            let _ = reply.send(Err(format!("task text over {MAX_REQUEST_TEXT} bytes")));
+            return;
+        }
+        let blocked = &self.trust.policy().blocked;
+        // Pick the first discovered peer with an agent advertising this skill.
+        let found = self.discovered.iter().find_map(|(peer, cards)| {
+            if blocked.contains(&peer.to_string()) {
+                return None;
+            }
+            cards.iter().find(|c| c.skills.iter().any(|s| s.id == skill)).map(|c| (*peer, c.name.clone()))
+        });
+        let Some((peer, agent)) = found else {
+            let _ = reply.send(Err(format!(
+                "no known swarm agent offers skill `{skill}` (run `find {skill}` or wait for discovery)"
+            )));
+            return;
+        };
+        // Teach the dialer the peer's advertised addresses.
+        let addrs: Vec<Multiaddr> = self
+            .discovered
+            .get(&peer)
+            .into_iter()
+            .flatten()
+            .flat_map(|c| &c.transports)
+            .filter(|t| t.kind == "libp2p")
+            .filter_map(|t| t.address.parse().ok())
+            .collect();
+        for a in addrs {
+            self.swarm.behaviour_mut().kad.add_address(&peer, a);
+        }
+        let msg = Message {
+            id: random_id(),
+            from: format!("operator@{}", self.peer_id()),
+            to: format!("{agent}@{peer}"),
+            role: Role::User,
+            skill: Some(skill.clone()),
+            task_id: None,
+            parts: vec![Part::Text { text: task }],
+        };
+        let signed = match Signed::sign(&self.keypair, msg) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = reply.send(Err(format!("signing failed: {e}")));
+                return;
+            }
+        };
+        let id = self.swarm.behaviour_mut().a2a.send_request(&peer, signed);
+        self.audit("out", &peer, &agent, &skill, "delegated");
+        // Reuse the outbound-response path: stash a control-reply oneshot, and adapt its JSON
+        // result to the plain text the kernel's `delegate_remote` expects.
+        let (ctl_tx, ctl_rx) = oneshot::channel();
+        self.pending_out.insert(id, (peer, ctl_tx));
+        tokio::spawn(async move {
+            let mapped = match ctl_rx.await {
+                Ok(Ok(v)) => Ok(v["text"].as_str().unwrap_or("").to_string()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("the node dropped the request".to_string()),
+            };
+            let _ = reply.send(mapped);
+        });
     }
 
     fn spawn_operator_turn(&mut self, agent: String, session: String, text: String) {

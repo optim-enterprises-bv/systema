@@ -69,6 +69,13 @@ Systema applies it in the kernel:
   taint merges back into the caller, delegation is **refused from an untrusted session** (so a remote peer can't
   escalate by causing a privileged agent to run), chains are depth-limited (3) and an agent can't delegate to
   itself.
+- **Cross-swarm delegation.** `delegate_remote { skill, task }` delegates to an agent on *another* node that
+  advertises `skill`. Tools run in the kernel, which cannot touch the swarm, so the kernel holds a one-way
+  channel to the node (`set_swarm`); the node finds a discovered provider and runs the task over the same signed
+  A2A request/response path as `systema send`, subject to the remote node's own trust gate. The task text leaves
+  the machine and the reply is a stranger's output, so the broker gives it `fetch` legs (outbound + untrusted):
+  delegating after a private read completes the trifecta and is escalated, and it is refused outright from an
+  already-untrusted session (the anti-forwarding stance).
 - **Shared knowledge base.** `kb_add`/`kb_search` give `kb`-capable agents a shared store of notes and documents
   (`kb.jsonl`), chunked on add and retrieved by **BM25 lexical search** — no embedding model required (a vector
   index can be layered on later without changing the tools). Same provenance model as the board: a search carries

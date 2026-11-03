@@ -81,6 +81,8 @@ pub enum ToolRequest {
     BoardRead { topic: Option<String> },
     /// Hand a sub-task to another agent and wait for its result.
     DelegateTask { agent: String, task: String },
+    /// Delegate a task to an agent on another swarm node offering `skill`.
+    DelegateRemote { skill: String, task: String },
     /// Read the task board (recent delegated tasks and their status).
     TaskList,
     /// Add a document/note to the shared knowledge base.
@@ -106,6 +108,7 @@ impl ToolRequest {
             ToolRequest::BoardPost { .. } => "board_post",
             ToolRequest::BoardRead { .. } => "board_read",
             ToolRequest::DelegateTask { .. } => "delegate_task",
+            ToolRequest::DelegateRemote { .. } => "delegate_remote",
             ToolRequest::TaskList => "task_list",
             ToolRequest::KbAdd { .. } => "kb_add",
             ToolRequest::KbSearch { .. } => "kb_search",
@@ -131,6 +134,7 @@ impl ToolRequest {
                 None => "board_read".into(),
             },
             ToolRequest::DelegateTask { agent, task } => format!("delegate_task → {agent}: {}", task.chars().take(80).collect::<String>()),
+            ToolRequest::DelegateRemote { skill, task } => format!("delegate_remote [{skill}]: {}", task.chars().take(70).collect::<String>()),
             ToolRequest::TaskList => "task_list".into(),
             ToolRequest::KbAdd { title, .. } => format!("kb_add {title}"),
             ToolRequest::KbSearch { query } => format!("kb_search {:?}", query.chars().take(60).collect::<String>()),
@@ -371,6 +375,19 @@ impl Broker {
                     return Checked::deny("cannot delegate from a session holding untrusted content");
                 }
                 (GrantMode::Allow, NONE, Target::Delegate)
+            }
+            ToolRequest::DelegateRemote { .. } => {
+                if !caps.delegate {
+                    return Checked::deny("this agent has no delegate capability");
+                }
+                // Sending a task to a stranger's node is an outbound channel, and its reply is
+                // untrusted content — the same legs as a fetch. Combined with any prior private
+                // read, the Rule of Two escalates (don't ship private data off-node silently).
+                // Refused from an already-untrusted session (the anti-forwarding stance).
+                if trust.untrusted {
+                    return Checked::deny("cannot delegate to the swarm from a session holding untrusted content");
+                }
+                (GrantMode::Allow, FETCH, Target::Delegate)
             }
             ToolRequest::TaskList => {
                 if !caps.delegate {
@@ -757,6 +774,23 @@ mod tests {
         assert_eq!(e.broker.check(&m, &TrustState::operator(), &del).decision, Decision::Allow);
         // But never from an untrusted session (that would be a privilege-escalation path).
         assert!(matches!(e.broker.check(&m, &TrustState::remote(), &del).decision, Decision::Deny(_)));
+    }
+
+    #[test]
+    fn remote_delegation_is_outbound_and_untrusted() {
+        let e = env();
+        let mut m = manifest();
+        m.capabilities.delegate = true;
+        let rem = ToolRequest::DelegateRemote { skill: "code-review".into(), task: "review this".into() };
+        let c = e.broker.check(&m, &TrustState::operator(), &rem);
+        assert_eq!(c.decision, Decision::Allow);
+        // Sending to a stranger + an untrusted reply = fetch-shaped legs.
+        assert!(c.legs.untrusted && c.legs.outbound && !c.legs.private);
+        // After a private read, remote delegation would complete the trifecta → escalated.
+        let after_read = TrustState::operator().with(PRIVATE);
+        assert!(matches!(e.broker.check(&m, &after_read, &rem).decision, Decision::Ask { .. }));
+        // Never from an already-untrusted session.
+        assert!(matches!(e.broker.check(&m, &TrustState::remote(), &rem).decision, Decision::Deny(_)));
     }
 
     #[test]

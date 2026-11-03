@@ -20,11 +20,12 @@ pub mod tools;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use systema_proto::{AgentCard, PROTOCOL_VERSION, Transport, now_ms};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 pub use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -48,6 +49,20 @@ pub const SESSION_TOKEN_BUDGET: usize = 24_000;
 pub const MAX_TOOL_STEPS: usize = 12;
 /// How deep `delegate_task` chains may nest before refusing (A→B→C→…).
 pub const MAX_DELEGATION_DEPTH: u32 = 3;
+/// How long to wait for a remote agent to answer a cross-swarm delegation.
+pub const REMOTE_DELEGATE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A request from the kernel (a `delegate_remote` tool call) for the node to find a swarm agent
+/// offering `skill` and run `task` on it, returning its answer. The node fulfils `reply`.
+pub struct RemoteCall {
+    pub skill: String,
+    pub task: String,
+    pub reply: oneshot::Sender<Result<String, String>>,
+}
+
+/// Channel the kernel uses to ask the node to perform a cross-swarm delegation. Injected by the
+/// node at startup (`Kernel::set_swarm`); absent when running without a node (e.g. `systema ask`).
+pub type SwarmTx = mpsc::Sender<RemoteCall>;
 
 const QUARANTINE_PROMPT: &str = "You are the quarantine responder of a Systema node. You have no tools, no memory \
 and no access to the operator or other agents. A peer that has not been approved sent the message below. Reply in \
@@ -70,6 +85,8 @@ pub struct Kernel {
     turn_walls: Mutex<HashMap<String, bool>>,
     /// Delegation nesting depth per session key, so `delegate_task` chains can't recurse forever.
     delegation_depth: Mutex<HashMap<String, u32>>,
+    /// Bridge to the node for cross-swarm delegation (set by the node at startup; None otherwise).
+    swarm: OnceLock<SwarmTx>,
     agents: HashMap<String, AgentManifest>,
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
@@ -99,6 +116,7 @@ impl Kernel {
             steer: Mutex::new(HashMap::new()),
             turn_walls: Mutex::new(HashMap::new()),
             delegation_depth: Mutex::new(HashMap::new()),
+            swarm: OnceLock::new(),
             bus: Bus::default(),
             agents,
             sessions: Mutex::new(HashMap::new()),
@@ -646,6 +664,17 @@ impl Kernel {
                 }
             }
             ToolRequest::TaskList => Ok(tasks::render(&tasks::list(&self.config.home, 50))),
+            ToolRequest::DelegateRemote { skill, task } => {
+                let id = tasks::create(&self.config.home, &m.name, &format!("swarm:{skill}"), task).ok();
+                let out = self.remote_delegate(skill, task).await;
+                if let Some(id) = id {
+                    match &out {
+                        Ok(a) => tasks::finish(&self.config.home, &id, true, a),
+                        Err(e) => tasks::finish(&self.config.home, &id, false, &format!("{e:#}")),
+                    }
+                }
+                out.map(|text| format!("[a swarm agent for `{skill}` answered]\n{text}"))
+            }
             ToolRequest::KbAdd { title, source, text } => {
                 kb::add(&self.config.home, title, source, &m.name, m.capabilities.public, session.trust.untrusted, text)
                     .map(|n| format!("added {n} chunk(s) to the knowledge base under `{title}`"))
@@ -663,6 +692,30 @@ impl Kernel {
             }
             Err(_) if opaque => "the operation failed.".into(),
             Err(e) => format!("error: {e:#}"),
+        }
+    }
+
+    /// Wire up the cross-swarm delegation bridge (called once by the node at startup).
+    pub fn set_swarm(&self, tx: SwarmTx) {
+        let _ = self.swarm.set(tx);
+    }
+
+    /// Delegate a task to an agent on another swarm node offering `skill`, and return its answer.
+    /// The node finds a provider among discovered peers and runs the request over A2A. The result
+    /// is untrusted content from a stranger (handled as such by the broker's `FETCH` legs).
+    async fn remote_delegate(&self, skill: &str, task: &str) -> anyhow::Result<String> {
+        let Some(tx) = self.swarm.get() else {
+            anyhow::bail!("cross-swarm delegation needs a running node; none is attached");
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(RemoteCall { skill: skill.to_string(), task: task.to_string(), reply: reply_tx })
+            .await
+            .map_err(|_| anyhow::anyhow!("the swarm gateway is closed"))?;
+        match tokio::time::timeout(REMOTE_DELEGATE_TIMEOUT, reply_rx).await {
+            Ok(Ok(Ok(text))) => Ok(text),
+            Ok(Ok(Err(e))) => anyhow::bail!("{e}"),
+            Ok(Err(_)) => anyhow::bail!("the swarm gateway dropped the request"),
+            Err(_) => anyhow::bail!("the remote agent did not respond within {}s", REMOTE_DELEGATE_TIMEOUT.as_secs()),
         }
     }
 
