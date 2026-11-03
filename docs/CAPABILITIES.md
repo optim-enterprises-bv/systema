@@ -25,6 +25,8 @@ manifest grants the capability behind it.
 | `run` | `exec` or `shell` | Run one program (no shell), scrubbed env, workspace cwd, timeout. |
 | `shell` | `shell` (non-public) | A real `bash -lc` in your home — the fast path for most local work. |
 | `fetch_url` | `network` | HTTP GET a public http(s) URL (no redirects; result is untrusted). |
+| `web_extract` | `network` | Fetch a public page and return it as readable text (HTML stripped; untrusted). |
+| `web_search` | `network` + `search_endpoint` | Search the web via a configured SearXNG endpoint; returns title/URL/snippet. |
 | `mcp__<server>__<tool>` | `mcp` | A tool on an operator-configured MCP server. |
 
 Hard-denied regardless of manifest: the Systema home, `~/.ssh`, `~/.gnupg`, keyrings, browser

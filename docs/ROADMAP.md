@@ -90,7 +90,9 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       `kb_search` does semantic recall, not just keyword matching.
 
 ## Tier 2 — strong multipliers
-- [ ] **Web search + extract** (not just raw `fetch_url`) — cf. Hermes `web_search`/`web_extract`.
+- [x] **Web search + extract** — `web_extract` returns a page as readable text (HTML stripped), and
+      `web_search` queries a configured SearXNG endpoint (`search_endpoint`); results are untrusted
+      web content. See `contrib/searxng/`.
 - [ ] **Browser / computer-use** — drive a browser or desktop for tasks beyond the filesystem.
 - [ ] **Session persistence + observability/replay** — sessions currently vanish on restart; add
       durable run history, tracing and replay (OpenTelemetry-style) on top of the audit log.

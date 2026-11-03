@@ -13,6 +13,11 @@ pub struct Config {
     pub agents_dir: PathBuf,
     /// MCP servers the operator allows agents to use (`[mcp.<name>]`).
     pub mcp: std::collections::BTreeMap<String, crate::mcp::McpServerConfig>,
+    /// SearXNG-compatible JSON search endpoint for the `web_search` tool (e.g. a local SearXNG
+    /// instance). Unset = `web_search` is unavailable. A trusted, operator-configured service, so
+    /// (like the inference endpoint) it is not subject to the public-IP guard that `fetch_url` is.
+    #[serde(default)]
+    pub search_endpoint: Option<String>,
     /// SYSTEMA_HOME this config was loaded from (not stored in the file).
     #[serde(skip)]
     pub home: PathBuf,
@@ -114,6 +119,7 @@ impl Default for Config {
             node: NodeConfig::default(),
             agents_dir: "agents".into(),
             mcp: Default::default(),
+            search_endpoint: None,
             home: home_dir(),
         }
     }

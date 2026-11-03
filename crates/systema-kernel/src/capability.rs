@@ -73,6 +73,10 @@ pub enum ToolRequest {
     /// A full shell command (`bash -lc`), for trusted local agents only. Real operator shell.
     Shell { command: String },
     Fetch { url: String },
+    /// Fetch a public web page and return it as readable text (HTML stripped).
+    WebExtract { url: String },
+    /// Search the web via the operator-configured search endpoint.
+    WebSearch { query: String },
     /// The agent's own persistent key/value memory (stored in its workspace).
     Memory { action: String, key: String, value: String },
     /// Post to the shared message board.
@@ -106,6 +110,8 @@ impl ToolRequest {
             ToolRequest::Run { .. } => "run",
             ToolRequest::Shell { .. } => "shell",
             ToolRequest::Fetch { .. } => "fetch_url",
+            ToolRequest::WebExtract { .. } => "web_extract",
+            ToolRequest::WebSearch { .. } => "web_search",
             ToolRequest::Memory { .. } => "memory",
             ToolRequest::BoardPost { .. } => "board_post",
             ToolRequest::BoardRead { .. } => "board_read",
@@ -130,6 +136,8 @@ impl ToolRequest {
             ToolRequest::Run { program, args } => format!("run {program} {}", args.join(" ")),
             ToolRequest::Shell { command } => format!("shell {}", command.replace('\n', " ")),
             ToolRequest::Fetch { url } => format!("fetch_url {url}"),
+            ToolRequest::WebExtract { url } => format!("web_extract {url}"),
+            ToolRequest::WebSearch { query } => format!("web_search {:?}", query.chars().take(60).collect::<String>()),
             ToolRequest::Memory { action, key, .. } => format!("memory {action} {key}").trim_end().to_string(),
             ToolRequest::BoardPost { topic, .. } => format!("board_post [{topic}]"),
             ToolRequest::BoardRead { topic } => match topic {
@@ -173,6 +181,8 @@ pub enum Target {
     Delegate,
     /// The shared knowledge base (handled in the kernel).
     Kb,
+    /// A web search via the configured endpoint (handled in the kernel).
+    Search,
     None,
 }
 
@@ -457,7 +467,7 @@ impl Broker {
                 }
                 (GrantMode::Allow, RUN, Target::Shell(command.clone()))
             }
-            ToolRequest::Fetch { url } => {
+            ToolRequest::Fetch { url } | ToolRequest::WebExtract { url } => {
                 if !caps.network {
                     return Checked::deny("this agent has no network capability");
                 }
@@ -465,6 +475,14 @@ impl Broker {
                     return Checked::deny(e);
                 }
                 (GrantMode::Allow, FETCH, Target::Url(url.clone()))
+            }
+            ToolRequest::WebSearch { .. } => {
+                if !caps.network {
+                    return Checked::deny("this agent has no network capability");
+                }
+                // Results are untrusted web content (fetch legs). Whether a search endpoint is
+                // configured is checked at execution time (the broker has no view of that config).
+                (GrantMode::Allow, FETCH, Target::Search)
             }
             ToolRequest::Mcp { server, tool, .. } => {
                 if !caps.mcp.contains(server) {
