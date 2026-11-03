@@ -118,6 +118,8 @@ inert text the operator applies by hand.
 | `systema tasks` | Show the task board. |
 | `systema session [key]` | List persisted sessions, or print one's transcript. |
 | `systema eval [name]` | Run the eval suite (`evals.toml`): one turn per eval, substring assertions. |
+| `systema history [agent]` | Recent turns — prompt, tool count, status, timing. |
+| `systema replay <id>` | One turn's full trace: prompt → each tool call/result → answer. |
 | `systema schedule [name]` | List scheduled jobs, or run one now. |
 | `systema kb <query>` / `kb-add --title T <text>` | Search / seed the knowledge base. |
 | `systema node` | Run the swarm node until ctrl-c. |
@@ -144,7 +146,12 @@ inert text the operator applies by hand.
 
 `identity.key`, `systema.toml`, `agents/`, `workspaces/<agent>/`, `sessions/<key>.json`,
 `control.sock`, `audit.jsonl`, `trust.json`, `inbox.json`, `approvals.json`, `board.jsonl`,
-`tasks.jsonl`, `kb.jsonl`, `schedules.toml` + `schedule-state.json`, `evals.toml`, `proposals/`.
+`tasks.jsonl`, `kb.jsonl`, `runs.jsonl`, `schedules.toml` + `schedule-state.json`, `evals.toml`,
+`proposals/`.
+
+Observability: `audit.jsonl` is one line per tool call; `runs.jsonl` is one record per *turn*
+(prompt, every tool call + outcome, final answer, timing, trust) — the per-turn view behind
+`systema history` and `systema replay`.
 
 Sessions persist to `sessions/<key>.json` and are restored on the next turn (as long as the agent's
 system prompt is unchanged), so conversation context — and titan-engine's prefix cache — survive a

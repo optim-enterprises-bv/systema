@@ -12,6 +12,7 @@ pub mod inference;
 pub mod kb;
 pub mod manifest;
 pub mod mcp;
+pub mod runs;
 pub mod schedule;
 pub mod scheduler;
 pub mod session;
@@ -89,6 +90,8 @@ pub struct Kernel {
     turn_walls: Mutex<HashMap<String, bool>>,
     /// Delegation nesting depth per session key, so `delegate_task` chains can't recurse forever.
     delegation_depth: Mutex<HashMap<String, u32>>,
+    /// Tool steps accumulated during the current turn per session, for the run-history record.
+    run_steps: Mutex<HashMap<String, Vec<runs::Step>>>,
     /// Bridge to the node for cross-swarm delegation (set by the node at startup; None otherwise).
     swarm: OnceLock<SwarmTx>,
     agents: HashMap<String, AgentManifest>,
@@ -120,6 +123,7 @@ impl Kernel {
             steer: Mutex::new(HashMap::new()),
             turn_walls: Mutex::new(HashMap::new()),
             delegation_depth: Mutex::new(HashMap::new()),
+            run_steps: Mutex::new(HashMap::new()),
             swarm: OnceLock::new(),
             bus: Bus::default(),
             agents,
@@ -496,23 +500,28 @@ impl Kernel {
         };
         let mut session = session.lock().await;
         let checkpoint = session.clone();
-        // Fresh turn: clear any capability-wall mark left by a previous turn in this session.
+        // Fresh turn: clear any capability-wall mark and step buffer from a previous turn.
         self.turn_walls.lock().await.remove(session_key);
+        self.run_steps.lock().await.remove(session_key);
+        let started = now_ms();
         session.push_user(prompt);
         self.emit(Some(agent), Some(session_key), EventKind::TurnStarted { prompt: prompt.to_string() });
-        let result = match self.run_loop(m, session_key, &mut session, priority.unwrap_or(m.priority), approver, cancel).await {
+        let (ok, text, result) = match self.run_loop(m, session_key, &mut session, priority.unwrap_or(m.priority), approver, cancel).await {
             Ok(answer) => {
                 self.emit(Some(agent), Some(session_key), EventKind::TurnFinished { ok: true, text: answer.clone() });
-                Ok(answer)
+                (true, answer.clone(), Ok(answer))
             }
             Err(e) => {
                 // Roll back the half-finished turn so the transcript stays well-formed.
                 *session = checkpoint;
-                self.emit(Some(agent), Some(session_key), EventKind::TurnFinished { ok: false, text: format!("{e:#}") });
-                Err(e)
+                let msg = format!("{e:#}");
+                self.emit(Some(agent), Some(session_key), EventKind::TurnFinished { ok: false, text: msg.clone() });
+                (false, msg, Err(e))
             }
         };
-        // Persist the (well-formed) session so it survives a node restart.
+        // Record the turn for run history / replay, and persist the session.
+        let steps = self.run_steps.lock().await.remove(session_key).unwrap_or_default();
+        runs::record(&self.config.home, agent, session_key, prompt, steps, ok, &text, now_ms().saturating_sub(started), session.trust);
         if let Err(e) = session.save(&path) {
             warn!(session = %session_key, "could not persist session: {e}");
         }
@@ -651,6 +660,12 @@ impl Kernel {
             Some(session_key),
             EventKind::ToolResult { request: req.summary(), outcome: outcome.clone(), trust: session.trust },
         );
+        self.run_steps
+            .lock()
+            .await
+            .entry(session_key.to_string())
+            .or_default()
+            .push(runs::Step { tool: req.summary(), outcome: outcome.clone() });
         // Sessions holding untrusted content get one uniform refusal: detailed reasons
         // (missing file vs. protected vs. policy) would let a remote peer probe the host.
         // The operator still sees the detail in the audit log.
