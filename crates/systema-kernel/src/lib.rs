@@ -679,6 +679,7 @@ impl Kernel {
                 out.map(|text| format!("[a swarm agent for `{skill}` answered]\n{text}"))
             }
             ToolRequest::DelegateParallel { skill, tasks } => Ok(self.run_parallel_remote(&m.name, skill, tasks).await),
+            ToolRequest::WebSearch { query } => self.web_search(query).await,
             ToolRequest::KbAdd { title, source, text } => {
                 let home = &self.config.home;
                 let chunks = kb::chunk(text);
@@ -744,6 +745,41 @@ impl Kernel {
             Ok(Err(_)) => anyhow::bail!("the swarm gateway dropped the request"),
             Err(_) => anyhow::bail!("the remote agent did not respond within {}s", REMOTE_DELEGATE_TIMEOUT.as_secs()),
         }
+    }
+
+    /// Search the web via the operator-configured SearXNG-compatible endpoint. Returns a short
+    /// list of results (title, URL, snippet). The results are untrusted web content.
+    async fn web_search(&self, query: &str) -> anyhow::Result<String> {
+        let endpoint = self
+            .config
+            .search_endpoint
+            .as_deref()
+            .context("web_search needs a search_endpoint in systema.toml (e.g. a local SearXNG instance)")?;
+        let base = format!("{}/search", endpoint.trim_end_matches('/'));
+        let url = reqwest::Url::parse_with_params(&base, &[("q", query), ("format", "json")])?;
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).build()?;
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("is the search service running at {endpoint}?"))?
+            .error_for_status()?;
+        let v: serde_json::Value = resp.json().await?;
+        let results = v["results"].as_array().cloned().unwrap_or_default();
+        if results.is_empty() {
+            return Ok(format!("no web results for {query:?}"));
+        }
+        let out = results
+            .iter()
+            .take(8)
+            .enumerate()
+            .map(|(i, r)| {
+                let snippet: String = r["content"].as_str().unwrap_or("").chars().take(200).collect();
+                format!("{}. {}\n   {}\n   {}", i + 1, r["title"].as_str().unwrap_or("?"), r["url"].as_str().unwrap_or(""), snippet)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(out)
     }
 
     /// Fan out `tasks` to swarm agents offering `skill`, concurrently (round-robined across

@@ -104,7 +104,11 @@ Systema applies it in the kernel:
   `exec` grant names a program and an argument prefix, with mode `allow` or `ask`. A trusted (non-public) agent
   may also have `shell` for a full `bash -lc` in the user's home — never offered to swarm-facing agents.
 - **Fetch guards.** http(s) only; loopback, private, link-local and CGNAT addresses are refused, so a fetch can't
-  reach titan-engine, the control socket's neighbours or your LAN.
+  reach titan-engine, the control socket's neighbours or your LAN. `fetch_url` and `web_extract` (which returns a
+  page as readable text, HTML stripped) both go through this guard with the DNS answer pinned.
+- **Web search.** `web_search` queries an operator-configured SearXNG-compatible endpoint
+  (`search_endpoint`) — a trusted local service, so (like the inference endpoint) it is exempt from the public-IP
+  guard, but its results are untrusted web content (fetch legs). Unset ⇒ the tool returns a clear error.
 
 - **MCP servers behind the broker.** The operator configures servers in `systema.toml` and declares which
   trifecta legs each touches (`untrusted`, `private`, `outbound`; **default: all three**, so an unclassified
