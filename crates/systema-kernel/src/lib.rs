@@ -13,6 +13,7 @@ pub mod kb;
 pub mod manifest;
 pub mod mcp;
 pub mod runs;
+pub mod sandbox;
 pub mod schedule;
 pub mod scheduler;
 pub mod session;
@@ -104,7 +105,13 @@ impl Kernel {
             manifest::load_dir(&config.agents_dir)?.into_iter().map(|m| (m.name.clone(), m)).collect();
         let user_home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
         let (events, _) = broadcast::channel(EVENT_CHANNEL);
-        let broker = Broker::new(&config.home, user_home, config.mcp.clone());
+        // Sandboxing is active only if enabled AND the microVM runtime is actually present — so a
+        // misconfiguration can never cause a public shell to run on the host; it just stays denied.
+        let sandbox_on = config.sandbox.enabled && sandbox::available();
+        if config.sandbox.enabled && !sandbox_on {
+            warn!("sandbox enabled but the microVM runtime (podman + krun) is not available; public shells stay denied");
+        }
+        let broker = Broker::new(&config.home, user_home, config.mcp.clone(), sandbox_on);
         // Every agent always has a usable workspace, so in-workspace reads/lists/writes work
         // from the first turn (otherwise `list_dir .` fails with "no such file or directory").
         for name in agents.keys() {
@@ -744,6 +751,11 @@ impl Kernel {
             }
             ToolRequest::DelegateParallel { skill, tasks } => Ok(self.run_parallel_remote(&m.name, skill, tasks).await),
             ToolRequest::WebSearch { query } => self.web_search(query).await,
+            // A public agent's shell runs in a microVM (the broker resolved it to SandboxShell).
+            ToolRequest::Shell { .. } if matches!(checked.target, capability::Target::SandboxShell(_)) => {
+                let capability::Target::SandboxShell(cmd) = &checked.target else { unreachable!() };
+                sandbox::run(&self.config.sandbox, workspace, cmd).await
+            }
             ToolRequest::KbAdd { title, source, text } => {
                 let home = &self.config.home;
                 let chunks = kb::chunk(text);

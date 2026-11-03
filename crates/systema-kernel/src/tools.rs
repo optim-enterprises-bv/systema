@@ -76,13 +76,21 @@ pub fn schemas(m: &AgentManifest) -> Vec<Value> {
             json!({ "type": "object", "properties": { "program": { "type": "string", "description": "Program name, e.g. git" }, "args": { "type": "array", "items": { "type": "string" } } }, "required": ["program"] }),
         ));
     }
-    if m.capabilities.shell && !m.capabilities.public {
-        v.push(function(
-            "shell",
+    if m.capabilities.shell {
+        // Non-public agents get a real shell in the user's home; public (swarm-facing) agents get
+        // one only when the microVM sandbox is enabled, and then it runs isolated in the VM.
+        let desc = if m.capabilities.public {
+            "Run a shell command (`sh -lc`) inside an isolated microVM — your workspace is mounted \
+             at /work, there is no host filesystem and no network. 120 s timeout."
+        } else {
             "Run a shell command with bash (pipes, globs, redirects allowed), in your home directory, \
              120 s timeout. This is the fastest way to do most tasks: inspect files, run tools, check the system. \
-             Prefer it for anything beyond a single simple file read.",
-            json!({ "type": "object", "properties": { "command": { "type": "string", "description": "A bash command line, e.g. `ls -la ~/restore | head`" } }, "required": ["command"] }),
+             Prefer it for anything beyond a single simple file read."
+        };
+        v.push(function(
+            "shell",
+            desc,
+            json!({ "type": "object", "properties": { "command": { "type": "string", "description": "A shell command line" } }, "required": ["command"] }),
         ));
     }
     if m.capabilities.board {

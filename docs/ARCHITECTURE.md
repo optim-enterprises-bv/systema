@@ -136,8 +136,12 @@ match. If a specialist is chosen but hits its capability ceiling (a denial `oper
 is **handed off to `operator`** automatically, so a local request still completes. The handoff is gated to
 operator-initiated sessions — a remote/untrusted session can never trigger an operator turn.
 
-**Sandboxing** (microVM via libkrun) is reserved for code that processes strangers' input: public agents and
-programs they write and run. Operator-only agents get host access through the broker.
+**Sandboxing** (microVM via libkrun) isolates code that processes strangers' input. A swarm-facing (`public`)
+agent is denied a host shell; with `[sandbox]` enabled it instead runs `shell` inside a libkrun microVM
+(`podman --runtime krun`, `--network=none`, only its workspace mounted at `/work`) — its own guest kernel, no
+host filesystem, no outbound path. The broker only ever routes a public shell to the VM when the runtime is
+actually present; otherwise it stays denied, so enabling the sandbox can never cause host execution. Operator-only
+(non-public) agents keep host access through the broker. See `contrib/microvm/`.
 
 ## Rules enforced in code, not prompts
 

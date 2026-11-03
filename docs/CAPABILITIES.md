@@ -141,6 +141,8 @@ inert text the operator applies by hand.
   `cloud_model` (API key read from `$SYSTEMA_CLOUD_API_KEY`) — used only when the local engine is
   unreachable.
 - **`search_endpoint`** (top level) — SearXNG JSON endpoint for `web_search` (see `contrib/searxng/`).
+- **`[sandbox]`** — microVM isolation for public agents' `shell`: `enabled`, `image`, `runtime`
+  (`krun`), `timeout_secs` (see `contrib/microvm/`).
 - **`[node]`** — `listen`, `bootstrap`, `mdns`, `announce_secs`, `gossip_cards`, `dht_server`,
   `relays`, `external_addrs`, `relay_server`, `[node.relay_limits]`, `[node.trust]`.
 - **MCP servers** — `[mcp.<name>]` with `command`, `args`, `env`, allowed `tools`, `ask_tools`,
