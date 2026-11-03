@@ -33,6 +33,13 @@ pub struct InferenceConfig {
     /// Sampling; unset = server default. Qwen3.x thinking models suggest 0.6 / 0.95.
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    /// Max context window (tokens) this node advertises to the swarm, so peers can route
+    /// long-context work here. Unset = not advertised.
+    #[serde(default)]
+    pub max_context: Option<u32>,
+    /// Free-text hardware descriptor advertised to the swarm, e.g. "RTX 4090 24GB". Operator-set.
+    #[serde(default)]
+    pub hardware: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +117,8 @@ impl Default for InferenceConfig {
             timeout_secs: 600,
             temperature: Some(0.6),
             top_p: Some(0.95),
+            max_context: None,
+            hardware: None,
         }
     }
 }

@@ -79,6 +79,17 @@ pub struct AgentCard {
     pub peer_id: String,
     pub transports: Vec<Transport>,
     pub skills: Vec<Skill>,
+    // --- node capabilities (optional; appended so older signed cards still verify byte-for-byte
+    // when these are empty/None, because they are skipped from serialization) ---
+    /// Model ids this node serves, e.g. ["qwen3.8-27b"]. Lets peers route heavy work to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// Maximum context window in tokens the node can handle, if advertised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context: Option<u32>,
+    /// Free-text hardware descriptor the operator sets, e.g. "RTX 4090 24GB".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware: Option<String>,
 }
 
 impl AgentCard {
@@ -260,7 +271,22 @@ mod tests {
             peer_id: peer.to_string(),
             transports: vec![],
             skills: vec![Skill { id: "code-review".into(), name: "Code review".into(), description: String::new(), tags: vec![] }],
+            models: vec![],
+            max_context: None,
+            hardware: None,
         }
+    }
+
+    #[test]
+    fn old_cards_without_capability_fields_still_verify() {
+        // A card serialized without the new fields (an older node) must deserialize and then
+        // re-serialize byte-identically, so its signature still checks out.
+        let kp = Keypair::generate_ed25519();
+        let signed = Signed::sign(&kp, card(&kp.public().to_peer_id())).unwrap();
+        let json = signed.to_json().unwrap();
+        assert!(!String::from_utf8_lossy(&json).contains("\"models\""), "empty capability fields must be skipped");
+        let back = Signed::<AgentCard>::from_json(&json).unwrap();
+        assert!(back.verify_card(DEFAULT_MAX_AGE_MS).is_ok());
     }
 
     #[test]

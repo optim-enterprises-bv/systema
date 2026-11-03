@@ -271,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
             for p in v.as_array().into_iter().flatten() {
                 for a in p["agents"].as_array().into_iter().flatten() {
                     let skills: Vec<_> = a["skills"].as_array().into_iter().flatten().filter_map(|s| s["id"].as_str()).collect();
-                    println!("{}  {:<10} skills={:?}  {}", p["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), skills, a["description"].as_str().unwrap_or(""));
+                    println!("{}  {:<10} skills={:?}{}  {}", p["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), skills, caps_str(a), a["description"].as_str().unwrap_or(""));
                 }
             }
         }
@@ -281,7 +281,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{} provider(s) in the DHT for `{}`, {} with verified cards", v["providers"], v["skill"].as_str().unwrap_or(""), results.len());
             for r in results {
                 for a in r["agents"].as_array().into_iter().flatten() {
-                    println!("{}  {:<10} {}", r["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), a["description"].as_str().unwrap_or(""));
+                    println!("{}  {:<10}{}  {}", r["peer"].as_str().unwrap_or("?"), a["name"].as_str().unwrap_or("?"), caps_str(a), a["description"].as_str().unwrap_or(""));
                     for t in a["transports"].as_array().into_iter().flatten() {
                         println!("    via {}", t["address"].as_str().unwrap_or("?"));
                     }
@@ -380,6 +380,22 @@ impl systema_kernel::Approver for TerminalApprover {
             _ => Answer::Deny,
         }
     }
+}
+
+/// Render a discovered agent card's advertised node capabilities, e.g. "  [ctx 262144 · RTX 4090 · qwen3.8-27b]".
+fn caps_str(a: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(ctx) = a["max_context"].as_u64() {
+        parts.push(format!("ctx {ctx}"));
+    }
+    if let Some(hw) = a["hardware"].as_str().filter(|s| !s.is_empty()) {
+        parts.push(hw.to_string());
+    }
+    let models: Vec<&str> = a["models"].as_array().into_iter().flatten().filter_map(|m| m.as_str()).collect();
+    if !models.is_empty() {
+        parts.push(models.join(","));
+    }
+    if parts.is_empty() { String::new() } else { format!("  [{}]", parts.join(" · ")) }
 }
 
 async fn control(home: &Path, cmd: Control) -> anyhow::Result<serde_json::Value> {

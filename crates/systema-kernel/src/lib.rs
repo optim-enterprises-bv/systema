@@ -893,6 +893,14 @@ impl Kernel {
 
     /// Agent cards for every agent marked `public`, hosted on `peer_id`.
     pub fn public_cards(&self, peer_id: &str, addrs: &[String]) -> Vec<AgentCard> {
+        // Node capabilities advertised on every public card, so peers can route heavy or
+        // long-context work to the most capable node instead of always doing it locally.
+        let inf = &self.config.inference;
+        let mut models: Vec<String> = [inf.fast_model.clone(), inf.deep_model.clone()]
+            .into_iter()
+            .filter(|m| m != "default")
+            .collect();
+        models.dedup();
         self.agents()
             .filter(|m| m.capabilities.public)
             .map(|m| AgentCard {
@@ -903,6 +911,9 @@ impl Kernel {
                 peer_id: peer_id.to_string(),
                 transports: addrs.iter().map(|a| Transport { kind: "libp2p".into(), address: a.clone() }).collect(),
                 skills: m.skills.clone(),
+                models: models.clone(),
+                max_context: inf.max_context,
+                hardware: inf.hardware.clone(),
             })
             .collect()
     }
