@@ -44,11 +44,18 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 - [x] **Cross-swarm delegation** (`delegate_remote`) — an agent delegates a task to an agent on
       another node that advertises the skill, over the signed A2A path, via a kernel→node bridge.
       The reply is treated as untrusted outbound (fetch legs), gated by the Rule of Two and the
-      remote node's own trust gate. *Next: parallel fan-out of independent sub-tasks.*
+      remote node's own trust gate.
+- [x] **Capability advertisement + capability-aware routing** — each signed agent card now carries
+      the node's models, max context and a hardware string (set under `[inference]`). `peers`/`find`
+      show them, and `delegate_remote` prefers the provider advertising the largest context window,
+      so heavy/long work routes to the bigger node. Fields are appended + skipped-when-empty, so
+      older signed cards still verify.
 
 ## Tier 1 — biggest leverage (make it an OS that *does* things)
-- [ ] **Parallel delegation.** Fan out independent sub-tasks concurrently and merge results
-      (sequential today; limited benefit on a single GPU, more once work is I/O- or swarm-bound).
+- [ ] **Parallel fan-out.** Run several delegations (local or remote) concurrently and merge
+      results. Across the swarm this uses *multiple nodes' GPUs at once* — N remote delegations run
+      in parallel on N machines, so it is high-value for heterogeneous swarms (not GPU-bound on one
+      box). Round-robin remote providers to spread load.
 - [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
       to the file-change and board-post triggers already shipped.
 - [ ] **Vector retrieval for the KB.** Add embeddings behind titan-engine and a vector index, so

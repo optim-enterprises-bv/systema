@@ -69,6 +69,12 @@ Systema applies it in the kernel:
   taint merges back into the caller, delegation is **refused from an untrusted session** (so a remote peer can't
   escalate by causing a privileged agent to run), chains are depth-limited (3) and an agent can't delegate to
   itself.
+- **Capability advertisement.** Each signed agent card carries the node's advertised capabilities — the models
+  it serves, its max context window, and an operator-set hardware string (all under `[inference]` in
+  `systema.toml`). The fields are appended to the card and skipped from serialization when empty, so older
+  signed cards still verify byte-for-byte. `peers` and `find` display them, and cross-swarm delegation uses them
+  to route: among providers of a skill, `delegate_remote` picks the one advertising the **largest context
+  window**, so long or heavy work goes to the more capable node rather than always running locally.
 - **Cross-swarm delegation.** `delegate_remote { skill, task }` delegates to an agent on *another* node that
   advertises `skill`. Tools run in the kernel, which cannot touch the swarm, so the kernel holds a one-way
   channel to the node (`set_swarm`); the node finds a discovered provider and runs the task over the same signed

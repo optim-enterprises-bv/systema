@@ -909,14 +909,17 @@ impl Node {
             let _ = reply.send(Err(format!("task text over {MAX_REQUEST_TEXT} bytes")));
             return;
         }
-        let blocked = &self.trust.policy().blocked;
-        // Pick the first discovered peer with an agent advertising this skill.
-        let found = self.discovered.iter().find_map(|(peer, cards)| {
-            if blocked.contains(&peer.to_string()) {
-                return None;
-            }
-            cards.iter().find(|c| c.skills.iter().any(|s| s.id == skill)).map(|c| (*peer, c.name.clone()))
-        });
+        let blocked = self.trust.policy().blocked.clone();
+        // Among discovered peers advertising this skill, prefer the most capable node — the one
+        // advertising the largest context window — so heavy/long work goes to the bigger GPU.
+        let found = self
+            .discovered
+            .iter()
+            .filter(|(peer, _)| !blocked.contains(&peer.to_string()))
+            .flat_map(|(peer, cards)| cards.iter().map(move |c| (*peer, c)))
+            .filter(|(_, c)| c.skills.iter().any(|s| s.id == skill))
+            .max_by_key(|(_, c)| c.max_context.unwrap_or(0))
+            .map(|(peer, c)| (peer, c.name.clone()));
         let Some((peer, agent)) = found else {
             let _ = reply.send(Err(format!(
                 "no known swarm agent offers skill `{skill}` (run `find {skill}` or wait for discovery)"
