@@ -117,7 +117,7 @@ inert text the operator applies by hand.
 | `systema propose` | Draft improvement proposals from the audit log. |
 | `systema tasks` | Show the task board. |
 | `systema session [key]` | List persisted sessions, or print one's transcript. |
-| `systema eval [name]` | Run the eval suite (`evals.toml`): one turn per eval, substring assertions. |
+| `systema eval [name]` | Run the eval suite (`evals.toml`): substring assertions + optional LLM-judge criterion. |
 | `systema history [agent]` | Recent turns — prompt, tool count, status, timing. |
 | `systema replay <id>` | One turn's full trace: prompt → each tool call/result → answer. |
 | `systema schedule [name]` | List scheduled jobs, or run one now. |

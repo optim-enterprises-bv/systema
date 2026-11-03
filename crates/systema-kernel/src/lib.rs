@@ -796,7 +796,30 @@ impl Kernel {
         let answer = self
             .ask_with_fallback(&agent, &session, &eval.prompt, Some(Priority::Interactive), TrustState::operator(), approver, &CancellationToken::new())
             .await?;
-        Ok(evals::check(eval, &agent, &answer))
+        let mut outcome = evals::check(eval, &agent, &answer);
+        // Optional LLM-judge criterion for things substrings can't express.
+        if let Some(criteria) = &eval.judge {
+            let verdict = self.judge(criteria, &answer).await.unwrap_or_else(|e| format!("FAIL: judge unavailable ({e:#})"));
+            if !verdict.to_uppercase().starts_with("PASS") {
+                outcome.pass = false;
+            }
+            outcome.judge = Some(verdict);
+        }
+        Ok(outcome)
+    }
+
+    /// Grade an answer against a natural-language criterion with the fast model. Returns a verdict
+    /// string starting with PASS or FAIL.
+    async fn judge(&self, criteria: &str, answer: &str) -> anyhow::Result<String> {
+        let sys = "You are a strict grader. Decide whether the answer satisfies the criterion. \
+                   Reply with exactly `PASS` or `FAIL: <short reason>` and nothing else.";
+        let user = format!("Criterion: {criteria}\n\nAnswer to grade:\n{answer}");
+        let messages = vec![ChatMessage::text("system", sys), ChatMessage::text("user", user)];
+        let reply = {
+            let _slot = self.scheduler.acquire(Priority::Interactive).await;
+            self.inference.chat(ModelTier::Fast, &messages).await?
+        };
+        Ok(reply.trim().to_string())
     }
 
     /// Search the web via the operator-configured SearXNG-compatible endpoint. Returns a short

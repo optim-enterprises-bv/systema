@@ -28,6 +28,10 @@ pub struct Eval {
     /// Substrings the answer must NOT contain (case-insensitive).
     #[serde(default)]
     pub expect_absent: Vec<String>,
+    /// A natural-language criterion graded by the fast model (PASS/FAIL), for checks substrings
+    /// can't express, e.g. "correctly explains why the function is buggy".
+    #[serde(default)]
+    pub judge: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,6 +61,8 @@ pub struct Outcome {
     pub missing: Vec<String>,
     /// Forbidden substrings that were present.
     pub forbidden: Vec<String>,
+    /// The LLM judge's verdict, when the eval has a `judge` criterion (`Some("PASS"/"FAIL: …")`).
+    pub judge: Option<String>,
     pub answer: String,
 }
 
@@ -71,6 +77,7 @@ pub fn check(eval: &Eval, agent: &str, answer: &str) -> Outcome {
         pass: missing.is_empty() && forbidden.is_empty(),
         missing,
         forbidden,
+        judge: None,
         answer: answer.to_string(),
     }
 }
@@ -86,6 +93,7 @@ mod tests {
             prompt: "p".into(),
             expect: vec!["free".into(), "GB".into()],
             expect_absent: vec!["error".into()],
+            judge: None,
         }
     }
 
