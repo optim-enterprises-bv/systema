@@ -107,8 +107,11 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 ## Tier 3 — longer horizon
 - [ ] **microVM sandbox (libkrun)** for public/swarm agents — the gate for giving strangers' code
       real execution. The one capability the broker currently reserves rather than grants.
-- [ ] **Higher-order swarm coordination** — contract-net negotiation, reputation/trust scoring, a
-      shared blackboard across peers (the local board, extended over A2A).
+- [~] **Higher-order swarm coordination.** *Reputation scoring shipped:* each node tracks how well
+      every peer serves its requests (Laplace-smoothed ok/fail, persisted to `reputation.json`),
+      `systema reputation` shows it, and cross-swarm delegation ranks providers by reputation first,
+      then capability. *Remaining: contract-net negotiation and a blackboard shared across peers
+      (the local board extended over A2A).*
 - [x] **Context compaction** — past the token budget a session is now **summarized and re-seeded**
       with that brief (fast model, background priority) instead of being dropped, so long
       conversations keep their thread. Sub-agent isolation already holds: delegated turns run in

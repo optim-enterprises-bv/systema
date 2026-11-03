@@ -43,6 +43,8 @@ enum Cmd {
     Eval { name: Option<String> },
     /// Recent turns (prompt, tools, status, timing); optionally filter by agent.
     History { agent: Option<String> },
+    /// Peer reputation: how well each swarm peer has served our requests.
+    Reputation,
     /// Show one turn's full trace (prompt → each tool call/result → answer) by id.
     Replay { id: String },
     /// List scheduled jobs (from schedules.toml); with a name, run that job now.
@@ -282,6 +284,25 @@ async fn main() -> anyhow::Result<()> {
         Cmd::History { agent } => {
             let runs = systema_kernel::runs::list(&home, agent.as_deref(), 40);
             println!("{}", systema_kernel::runs::render_list(&runs));
+        }
+        Cmd::Reputation => {
+            let raw = std::fs::read_to_string(home.join("reputation.json")).unwrap_or_default();
+            let map: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+            if map.is_empty() {
+                println!("no peer reputation yet (interact with the swarm first)");
+            }
+            let mut rows: Vec<_> = map
+                .iter()
+                .map(|(peer, v)| {
+                    let (ok, fail) = (v["ok"].as_u64().unwrap_or(0), v["fail"].as_u64().unwrap_or(0));
+                    let score = (ok as f64 + 1.0) / (ok as f64 + fail as f64 + 2.0);
+                    (score, peer.clone(), ok, fail)
+                })
+                .collect();
+            rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            for (score, peer, ok, fail) in rows {
+                println!("{:.2}  {:<52} {ok} ok / {fail} fail", score, peer);
+            }
         }
         Cmd::Replay { id } => match systema_kernel::runs::get(&home, &id) {
             Some(run) => println!("{}", systema_kernel::runs::render_full(&run)),
