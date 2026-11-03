@@ -98,8 +98,9 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       restored on the next turn, so context and the prefix cache survive a node restart.
       `systema session [key]` lists/prints transcripts. *Remaining: observability/replay — a
       structured run history and tracing (OpenTelemetry-style) over the audit log + event stream.*
-- [ ] **Evals** — a test harness for agent quality / regressions, wired to `propose` so proposals
-      are testable before they are applied.
+- [x] **Evals** — `systema eval` runs an `evals.toml` suite (one turn per eval, case-insensitive
+      `expect`/`expect_absent` substring assertions), so agent changes can be regression-tested.
+      See `contrib/evals.example.toml`. *Next: an LLM-judge assertion and wiring into `propose`.*
 
 ## Tier 3 — longer horizon
 - [ ] **microVM sandbox (libkrun)** for public/swarm agents — the gate for giving strangers' code
