@@ -26,6 +26,18 @@ struct Choice {
     message: ChatMessage,
 }
 
+#[derive(Deserialize)]
+struct EmbeddingResponse {
+    data: Vec<EmbeddingDatum>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingDatum {
+    #[serde(default)]
+    index: usize,
+    embedding: Vec<f32>,
+}
+
 impl InferenceClient {
     pub fn new(cfg: InferenceConfig) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(cfg.timeout_secs)).build()?;
@@ -81,6 +93,38 @@ impl InferenceClient {
     /// Plain text completion with no tools.
     pub async fn chat(&self, tier: ModelTier, messages: &[ChatMessage]) -> anyhow::Result<String> {
         self.complete(tier, messages, &[]).await?.content.context("empty completion")
+    }
+
+    /// Whether an embeddings endpoint is configured.
+    pub fn embeddings_enabled(&self) -> bool {
+        self.cfg.embed_endpoint.is_some()
+    }
+
+    /// Embed one or more texts via the configured `embed_endpoint` (OpenAI `/embeddings` shape).
+    /// Returns one vector per input, in order. Errors if no endpoint is configured.
+    pub async fn embed(&self, inputs: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let endpoint = self.cfg.embed_endpoint.as_deref().context("no embed_endpoint configured")?;
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!("{}/embeddings", endpoint.trim_end_matches('/'));
+        let body = json!({ "model": self.cfg.embed_model, "input": inputs });
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("is the embeddings service running at {endpoint}?"))?
+            .error_for_status()?;
+        let parsed: EmbeddingResponse = resp.json().await?;
+        if parsed.data.len() != inputs.len() {
+            anyhow::bail!("embeddings endpoint returned {} vectors for {} inputs", parsed.data.len(), inputs.len());
+        }
+        // Keep the endpoint's order (index) to align vectors with inputs.
+        let mut data = parsed.data;
+        data.sort_by_key(|d| d.index);
+        Ok(data.into_iter().map(|d| d.embedding).collect())
     }
 
     /// Cheap reachability check.

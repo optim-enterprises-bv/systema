@@ -87,9 +87,12 @@ Systema applies it in the kernel:
   delegating after a private read completes the trifecta and is escalated, and it is refused outright from an
   already-untrusted session (the anti-forwarding stance).
 - **Shared knowledge base.** `kb_add`/`kb_search` give `kb`-capable agents a shared store of notes and documents
-  (`kb.jsonl`), chunked on add and retrieved by **BM25 lexical search** — no embedding model required (a vector
-  index can be layered on later without changing the tools). Same provenance model as the board: a search carries
-  the *private* leg, plus *untrusted* when the store holds any public/tainted entry.
+  (`kb.jsonl`), chunked on add. Retrieval is **BM25 lexical** by default, and **semantic (vector cosine)** when
+  `[inference].embed_endpoint` is set — then `kb_add` embeds each chunk and `kb_search` embeds the query and ranks
+  by cosine, falling back to BM25 when embeddings are off or empty. The embedding model runs as a separate
+  OpenAI-compatible service (`contrib/npu-embeddings/`, OpenVINO on the Intel NPU) so it never contends with the
+  GPU. Same provenance model as the board: a search carries the *private* leg, plus *untrusted* when the store
+  holds any public/tainted entry.
 - **Shared message board.** `board_post`/`board_read` let board-capable agents coordinate through one shared log
   (`board.jsonl`). Because any agent — including a swarm-facing one, or one in a tainted session — can post, the
   board is treated as untrusted-and-private input: a read carries the *private* leg (it may hold operator

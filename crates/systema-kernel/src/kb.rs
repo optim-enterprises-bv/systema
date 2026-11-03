@@ -25,6 +25,9 @@ pub struct Doc {
     pub tainted: bool,
     pub text: String,
     pub ts: u64,
+    /// Embedding of `text`, if an embeddings endpoint was configured when it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<Vec<f32>>,
 }
 
 fn path(home: &Path) -> PathBuf {
@@ -32,7 +35,7 @@ fn path(home: &Path) -> PathBuf {
 }
 
 /// Split long text into chunks on paragraph boundaries, each ≲ CHUNK_CHARS.
-fn chunk(text: &str) -> Vec<String> {
+pub fn chunk(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     for para in text.split("\n\n") {
@@ -62,12 +65,29 @@ fn chunk(text: &str) -> Vec<String> {
 
 /// Add a document (chunked). Returns how many chunks were stored.
 pub fn add(home: &Path, title: &str, source: &str, author: &str, public: bool, tainted: bool, text: &str) -> anyhow::Result<usize> {
+    add_embedded(home, title, source, author, public, tainted, &chunk(text), None)
+}
+
+/// Add pre-chunked text, optionally with one embedding vector per chunk (aligned by index). Pass
+/// `vectors = None` for BM25-only storage. Returns the number of chunks stored.
+pub fn add_embedded(
+    home: &Path,
+    title: &str,
+    source: &str,
+    author: &str,
+    public: bool,
+    tainted: bool,
+    chunks: &[String],
+    vectors: Option<&[Vec<f32>]>,
+) -> anyhow::Result<usize> {
     use std::io::Write as _;
+    if let Some(v) = vectors {
+        anyhow::ensure!(v.len() == chunks.len(), "got {} vectors for {} chunks", v.len(), chunks.len());
+    }
     let title: String = title.chars().take(200).collect();
     let source: String = source.chars().take(200).collect();
-    let chunks = chunk(text);
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path(home))?;
-    for c in &chunks {
+    for (i, c) in chunks.iter().enumerate() {
         let d = Doc {
             id: random_id(),
             title: title.clone(),
@@ -77,6 +97,7 @@ pub fn add(home: &Path, title: &str, source: &str, author: &str, public: bool, t
             tainted,
             text: c.clone(),
             ts: now_ms(),
+            vector: vectors.map(|v| v[i].clone()),
         };
         writeln!(f, "{}", serde_json::to_string(&d)?)?;
     }
@@ -135,6 +156,40 @@ pub fn search(home: &Path, query: &str, k: usize) -> Vec<Doc> {
     scored.into_iter().take(k).map(|(_, d)| d.clone()).collect()
 }
 
+/// Whether any stored chunk has an embedding (so a vector search is worthwhile).
+pub fn has_vectors(home: &Path) -> bool {
+    all_docs(home).iter().any(|d| d.vector.is_some())
+}
+
+/// Cosine similarity of two vectors (0 if either is empty or a different length).
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
+    for (x, y) in a.iter().zip(b) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na.sqrt() * nb.sqrt())
+}
+
+/// Rank stored chunks by cosine similarity to a query embedding; best first, up to `k`.
+/// Chunks without an embedding are skipped.
+pub fn search_vectors(home: &Path, query: &[f32], k: usize) -> Vec<Doc> {
+    let mut scored: Vec<(f32, Doc)> = all_docs(home)
+        .into_iter()
+        .filter_map(|d| d.vector.as_ref().map(|v| (cosine(query, v), d.clone())))
+        .filter(|(s, _)| *s > 0.0)
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().take(k).map(|(_, d)| d).collect()
+}
+
 pub fn render(docs: &[Doc]) -> String {
     if docs.is_empty() {
         return "(no matching knowledge)".into();
@@ -168,6 +223,30 @@ mod tests {
         assert!(!hits.is_empty());
         assert_eq!(hits[0].title, "Disk cleanup");
         assert!(search(&h, "propagate errors", DEFAULT_K)[0].title == "Rust errors");
+        std::fs::remove_dir_all(&h).ok();
+    }
+
+    #[test]
+    fn vector_search_ranks_by_cosine() {
+        let h = tmp();
+        // Store three chunks with hand-picked 2-D vectors.
+        add_embedded(&h, "east", "", "op", false, false, &["east".into()], Some(&[vec![1.0, 0.0]])).unwrap();
+        add_embedded(&h, "north", "", "op", false, false, &["north".into()], Some(&[vec![0.0, 1.0]])).unwrap();
+        add_embedded(&h, "northeast", "", "op", false, false, &["northeast".into()], Some(&[vec![0.7, 0.7]])).unwrap();
+        assert!(has_vectors(&h));
+        // A query pointing east ranks "east" first, then "northeast".
+        let hits = search_vectors(&h, &[1.0, 0.05], DEFAULT_K);
+        assert_eq!(hits[0].title, "east");
+        assert_eq!(hits[1].title, "northeast");
+        std::fs::remove_dir_all(&h).ok();
+    }
+
+    #[test]
+    fn bm25_still_works_without_vectors() {
+        let h = tmp();
+        add(&h, "plain", "", "op", false, false, "disk usage and cleanup tips").unwrap();
+        assert!(!has_vectors(&h));
+        assert_eq!(search(&h, "cleanup", DEFAULT_K)[0].title, "plain");
         std::fs::remove_dir_all(&h).ok();
     }
 

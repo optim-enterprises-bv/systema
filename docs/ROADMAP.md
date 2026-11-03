@@ -59,8 +59,10 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 **Tier 1 is complete.** What remains below is Tier 2+ and the parked sandbox.
 
 ## Deferred / blocked
-- [ ] **Vector retrieval for the KB** — *blocked on an embedding model.* The KB works on BM25 today
-      and is shaped to drop a vector index in behind the same `kb_add`/`kb_search` tools.
+- [x] **Vector (semantic) retrieval for the KB** — *code shipped.* With `[inference].embed_endpoint`
+      set, `kb_add` embeds each chunk and `kb_search` ranks by cosine similarity; with it unset the
+      KB falls back to BM25, so nothing extra is required. The embedding service runs separately
+      (see below) — run it to turn semantic search on.
 
   **The embedding model doesn't belong on the GPU.** titan-engine already saturates the RTX 5080
   with generation, and an embedding model is small and encoder-only — the wrong thing to fight the
@@ -73,11 +75,13 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
   `/v1/embeddings` service on its own port. Generation stays on the GPU, embeddings run on the idle
   NPU, and neither contends for the other.
 
-  **Planned shape (no tool changes):** add `[inference].embed_endpoint` (+ model id) to the config;
-  on `kb_add`, embed each chunk via that endpoint and store the vector alongside the text in
-  `kb.jsonl`; on `kb_search`, embed the query and rank by cosine similarity (a brute-force scan is
-  fine up to tens of thousands of chunks; add an ANN index later). Fall back to BM25 when no embed
-  endpoint is configured, so the KB keeps working with nothing extra running.
+  **Shipped shape (no tool changes):** `[inference].embed_endpoint` (+ `embed_model`); on `kb_add`,
+  each chunk is embedded via that endpoint and the vector stored alongside the text in `kb.jsonl`;
+  on `kb_search`, the query is embedded and ranked by cosine similarity (brute-force scan, fine up
+  to tens of thousands of chunks — add an ANN index later), falling back to BM25 when embeddings are
+  off or empty. The NPU embedding service lives in `contrib/npu-embeddings/` (OpenVINO, with a CPU
+  fallback for testing). *Remaining: a `kb reindex` to embed entries added before the endpoint
+  existed, and an ANN index for large stores.*
 - [ ] **Local parallel delegation** — low value on a single GPU (generation serializes); the swarm
       path above is the one that matters.
 - [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
