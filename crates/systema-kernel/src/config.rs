@@ -40,6 +40,18 @@ pub struct InferenceConfig {
     /// Free-text hardware descriptor advertised to the swarm, e.g. "RTX 4090 24GB". Operator-set.
     #[serde(default)]
     pub hardware: Option<String>,
+    /// OpenAI-compatible `/embeddings` endpoint for the knowledge base. Unset = BM25 only.
+    /// Point this at a small embedding service (e.g. one running on the NPU), separate from the
+    /// generation endpoint so the two never contend for the GPU.
+    #[serde(default)]
+    pub embed_endpoint: Option<String>,
+    /// Model id to request from `embed_endpoint`.
+    #[serde(default = "default_embed_model")]
+    pub embed_model: String,
+}
+
+fn default_embed_model() -> String {
+    "default".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +131,8 @@ impl Default for InferenceConfig {
             top_p: Some(0.95),
             max_context: None,
             hardware: None,
+            embed_endpoint: None,
+            embed_model: default_embed_model(),
         }
     }
 }

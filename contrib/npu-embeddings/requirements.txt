@@ -1,0 +1,5 @@
+# OpenVINO embeddings service for Systema's knowledge base (Intel NPU / CPU / GPU).
+optimum-intel[openvino]>=1.21
+transformers>=4.44
+torch>=2.3
+numpy>=1.26

@@ -680,11 +680,34 @@ impl Kernel {
             }
             ToolRequest::DelegateParallel { skill, tasks } => Ok(self.run_parallel_remote(&m.name, skill, tasks).await),
             ToolRequest::KbAdd { title, source, text } => {
-                kb::add(&self.config.home, title, source, &m.name, m.capabilities.public, session.trust.untrusted, text)
-                    .map(|n| format!("added {n} chunk(s) to the knowledge base under `{title}`"))
+                let home = &self.config.home;
+                let chunks = kb::chunk(text);
+                // Embed on add when an embeddings endpoint is configured (e.g. the NPU service);
+                // otherwise store text only and the KB falls back to BM25.
+                let vectors = if self.inference.embeddings_enabled() {
+                    self.inference.embed(&chunks).await.ok()
+                } else {
+                    None
+                };
+                let embedded = vectors.is_some();
+                kb::add_embedded(home, title, source, &m.name, m.capabilities.public, session.trust.untrusted, &chunks, vectors.as_deref())
+                    .map(|n| format!("added {n} chunk(s) to the knowledge base under `{title}`{}", if embedded { " (embedded)" } else { "" }))
             }
             ToolRequest::KbSearch { query } => {
-                let hits = kb::search(&self.config.home, query, kb::DEFAULT_K);
+                let home = &self.config.home;
+                // Prefer semantic (vector) search when embeddings are available and the store has
+                // vectors; fall back to BM25 if the query can't be embedded or finds nothing.
+                let hits = if self.inference.embeddings_enabled() && kb::has_vectors(home) {
+                    match self.inference.embed(std::slice::from_ref(query)).await {
+                        Ok(mut v) if !v.is_empty() => {
+                            let hits = kb::search_vectors(home, &v.remove(0), kb::DEFAULT_K);
+                            if hits.is_empty() { kb::search(home, query, kb::DEFAULT_K) } else { hits }
+                        }
+                        _ => kb::search(home, query, kb::DEFAULT_K),
+                    }
+                } else {
+                    kb::search(home, query, kb::DEFAULT_K)
+                };
                 Ok(kb::render(&hits))
             }
             _ => tools::execute(&req, &checked, workspace).await,
