@@ -107,7 +107,7 @@ where the NATs allow it — validate across two real NATs with `scripts/holepunc
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — where Systema stands against other agentic systems, what's
   shipped and what's next.
 
-**Not yet:** a microVM sandbox for public (swarm-facing) agents, an HTTP A2A gateway, reputation.
+**Not yet:** an HTTP A2A gateway, contract-net negotiation, browser/computer-use.
 
 ## Layout
 

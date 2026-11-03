@@ -18,9 +18,31 @@ pub struct Config {
     /// (like the inference endpoint) it is not subject to the public-IP guard that `fetch_url` is.
     #[serde(default)]
     pub search_endpoint: Option<String>,
+    /// microVM sandbox for swarm-facing (public) agents.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
     /// SYSTEMA_HOME this config was loaded from (not stored in the file).
     #[serde(skip)]
     pub home: PathBuf,
+}
+
+/// microVM isolation (libkrun via `podman --runtime krun`) for public/swarm agents, so a
+/// stranger's agent can run a shell without touching the host. Off by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxConfig {
+    pub enabled: bool,
+    /// Container image booted as the microVM guest.
+    pub image: String,
+    /// `podman` runtime to use (libkrun).
+    pub runtime: String,
+    pub timeout_secs: u64,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self { enabled: false, image: "docker.io/library/alpine:latest".into(), runtime: "krun".into(), timeout_secs: 120 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +149,7 @@ impl Default for Config {
             agents_dir: "agents".into(),
             mcp: Default::default(),
             search_endpoint: None,
+            sandbox: SandboxConfig::default(),
             home: home_dir(),
         }
     }

@@ -172,6 +172,8 @@ pub enum Target {
     Program(PathBuf),
     Url(String),
     Shell(String),
+    /// A shell command for a public agent, to run inside a microVM (handled in the kernel).
+    SandboxShell(String),
     Mcp,
     /// The agent's own memory store, resolved inside its workspace at execute time.
     Memory,
@@ -205,6 +207,9 @@ pub struct Broker {
     user_home: PathBuf,
     protected: Vec<PathBuf>,
     mcp: std::collections::BTreeMap<String, McpServerConfig>,
+    /// microVM sandbox is enabled and its runtime is available, so a public agent may have a
+    /// shell (run inside the microVM). When false, a public shell stays denied.
+    sandbox: bool,
 }
 
 /// Paths under the user's home that hold credentials or session state.
@@ -224,13 +229,14 @@ impl Broker {
         systema_home: impl Into<PathBuf>,
         user_home: impl Into<PathBuf>,
         mcp: std::collections::BTreeMap<String, McpServerConfig>,
+        sandbox: bool,
     ) -> Self {
         let systema_home = canonical_or_normal(&systema_home.into());
         let user_home = canonical_or_normal(&user_home.into());
         let mut protected: Vec<PathBuf> = PROTECTED_IN_HOME.iter().map(|p| canonical_or_normal(&user_home.join(p))).collect();
         protected.extend(PROTECTED_SYSTEM.iter().map(|p| canonical_or_normal(Path::new(p))));
         protected.push(systema_home.clone());
-        Self { systema_home, user_home, protected, mcp }
+        Self { systema_home, user_home, protected, mcp, sandbox }
     }
 
     pub fn mcp_server(&self, name: &str) -> Option<&McpServerConfig> {
@@ -459,11 +465,19 @@ impl Broker {
                 if !caps.shell {
                     return Checked::deny("this agent has no shell capability");
                 }
-                // A real shell can read anything the user can (including credential stores),
-                // so it is never handed to a swarm-facing agent. Until public agents run in a
-                // microVM, shell is operator-only.
                 if caps.public {
-                    return Checked::deny("shell is not available to swarm-facing (public) agents");
+                    // A real host shell could read anything the user can, so a swarm-facing agent
+                    // never gets one. With the microVM sandbox enabled it instead runs in an
+                    // isolated VM (no host filesystem, no network); without it, shell stays denied.
+                    if self.sandbox {
+                        return Checked {
+                            decision: Decision::Allow,
+                            // Isolated: no host private data, no outbound network from the VM.
+                            legs: NONE,
+                            target: Target::SandboxShell(command.clone()),
+                        };
+                    }
+                    return Checked::deny("shell is not available to swarm-facing (public) agents (enable the microVM sandbox to allow it in isolation)");
                 }
                 (GrantMode::Allow, RUN, Target::Shell(command.clone()))
             }
@@ -668,7 +682,7 @@ mod tests {
         };
         mcp.insert("web".into(), server(true, false, true));
         mcp.insert("unclassified".into(), server(true, true, true));
-        let broker = Broker::new(home.join(".systema"), &home, mcp);
+        let broker = Broker::new(home.join(".systema"), &home, mcp, false);
         Env { root, broker }
     }
 
@@ -795,6 +809,28 @@ mod tests {
 
     fn mcp(server: &str, tool: &str) -> ToolRequest {
         ToolRequest::Mcp { server: server.into(), tool: tool.into(), arguments: "{}".into() }
+    }
+
+    #[test]
+    fn public_shell_runs_in_a_microvm_only_when_sandbox_is_on() {
+        let e = env();
+        let mut pub_agent = manifest(); // public = true
+        pub_agent.capabilities.shell = true;
+        let cmd = ToolRequest::Shell { command: "echo hi".into() };
+        let op = TrustState::operator();
+        // No sandbox (the env broker): a public shell is denied outright.
+        assert!(matches!(e.broker.check(&pub_agent, &op, &cmd).decision, Decision::Deny(_)));
+        // Sandbox on: allowed, resolved to a microVM shell, carrying no trifecta legs (isolated).
+        let sb = Broker::new("/tmp/x", "/tmp/x", std::collections::BTreeMap::new(), true);
+        let c = sb.check(&pub_agent, &op, &cmd);
+        assert_eq!(c.decision, Decision::Allow);
+        assert!(matches!(c.target, Target::SandboxShell(_)));
+        assert_eq!(c.legs, TrustState::default());
+        // A non-public agent still gets a real host shell even with the sandbox enabled.
+        let mut local = manifest();
+        local.capabilities.public = false;
+        local.capabilities.shell = true;
+        assert!(matches!(sb.check(&local, &op, &cmd).target, Target::Shell(_)));
     }
 
     #[test]

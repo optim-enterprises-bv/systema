@@ -105,8 +105,12 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       so a proposed change is tested before it's applied.*
 
 ## Tier 3 — longer horizon
-- [ ] **microVM sandbox (libkrun)** for public/swarm agents — the gate for giving strangers' code
-      real execution. The one capability the broker currently reserves rather than grants.
+- [x] **microVM sandbox (libkrun)** — a public (swarm-facing) agent's `shell` now runs inside a
+      libkrun microVM (`podman --runtime krun`): its own guest kernel, no host filesystem (only the
+      agent's workspace at `/work`), no network. Off by default; enable `[sandbox]` and the runtime
+      must be present (else a public shell stays denied — enabling only ever *adds* isolation-safe
+      capability). See `contrib/microvm/`. *Next: a filtered-network opt-in, and running public
+      `exec` in the VM too.*
 - [~] **Higher-order swarm coordination.** *Reputation scoring shipped:* each node tracks how well
       every peer serves its requests (Laplace-smoothed ok/fail, persisted to `reputation.json`),
       `systema reputation` shows it, and cross-swarm delegation ranks providers by reputation first,
