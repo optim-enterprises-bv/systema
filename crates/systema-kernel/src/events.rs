@@ -34,6 +34,8 @@ pub enum EventKind {
     TurnFinished { ok: bool, text: String },
     Inbound { peer: String, skill: String, outcome: String },
     Discovered { peer: String, skills: Vec<String> },
+    /// A local agent posted to the shared board; the node gossips it to the swarm (blackboard).
+    BoardPosted { topic: String, text: String },
     Note { text: String },
 }
 

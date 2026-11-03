@@ -296,6 +296,9 @@ impl App {
             EventKind::Note { text } => {
                 self.push_event(ts, "note", theme::DIM, who, text);
             }
+            EventKind::BoardPosted { topic, text } => {
+                self.push_event(ts, "board", theme::PURPLE, who, format!("[{topic}] {text}"));
+            }
         }
     }
 }
