@@ -94,8 +94,10 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       `web_search` queries a configured SearXNG endpoint (`search_endpoint`); results are untrusted
       web content. See `contrib/searxng/`.
 - [ ] **Browser / computer-use** — drive a browser or desktop for tasks beyond the filesystem.
-- [ ] **Session persistence + observability/replay** — sessions currently vanish on restart; add
-      durable run history, tracing and replay (OpenTelemetry-style) on top of the audit log.
+- [x] **Session persistence** — sessions are saved to `sessions/<key>.json` after every turn and
+      restored on the next turn, so context and the prefix cache survive a node restart.
+      `systema session [key]` lists/prints transcripts. *Remaining: observability/replay — a
+      structured run history and tracing (OpenTelemetry-style) over the audit log + event stream.*
 - [ ] **Evals** — a test harness for agent quality / regressions, wired to `propose` so proposals
       are testable before they are applied.
 

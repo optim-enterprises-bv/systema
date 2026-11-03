@@ -116,6 +116,7 @@ inert text the operator applies by hand.
 | `systema do <prompt>` | Ask the OS — route to the best agent (with operator fallback). |
 | `systema propose` | Draft improvement proposals from the audit log. |
 | `systema tasks` | Show the task board. |
+| `systema session [key]` | List persisted sessions, or print one's transcript. |
 | `systema schedule [name]` | List scheduled jobs, or run one now. |
 | `systema kb <query>` / `kb-add --title T <text>` | Search / seed the knowledge base. |
 | `systema node` | Run the swarm node until ctrl-c. |
@@ -140,6 +141,10 @@ inert text the operator applies by hand.
 
 ## State files (`$SYSTEMA_HOME/`, default `~/.systema/`)
 
-`identity.key`, `systema.toml`, `agents/`, `workspaces/<agent>/`, `control.sock`, `audit.jsonl`,
-`trust.json`, `inbox.json`, `approvals.json`, `board.jsonl`, `tasks.jsonl`, `kb.jsonl`,
-`schedules.toml` + `schedule-state.json`, `proposals/`.
+`identity.key`, `systema.toml`, `agents/`, `workspaces/<agent>/`, `sessions/<key>.json`,
+`control.sock`, `audit.jsonl`, `trust.json`, `inbox.json`, `approvals.json`, `board.jsonl`,
+`tasks.jsonl`, `kb.jsonl`, `schedules.toml` + `schedule-state.json`, `proposals/`.
+
+Sessions persist to `sessions/<key>.json` and are restored on the next turn (as long as the agent's
+system prompt is unchanged), so conversation context — and titan-engine's prefix cache — survive a
+node restart. A session is still replaced, not rewritten, once it outgrows its token budget.
