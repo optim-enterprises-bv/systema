@@ -59,8 +59,25 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
 **Tier 1 is complete.** What remains below is Tier 2+ and the parked sandbox.
 
 ## Deferred / blocked
-- [ ] **Vector retrieval for the KB** — *blocked:* needs an embedding model served by titan-engine.
-      The KB works on BM25 today and is shaped to drop a vector index in behind the same tools.
+- [ ] **Vector retrieval for the KB** — *blocked on an embedding model.* The KB works on BM25 today
+      and is shaped to drop a vector index in behind the same `kb_add`/`kb_search` tools.
+
+  **The embedding model doesn't belong on the GPU.** titan-engine already saturates the RTX 5080
+  with generation, and an embedding model is small and encoder-only — the wrong thing to fight the
+  GPU for. The right home for it is the machine's **Intel NPU**.
+
+  **It can run on the local NPU.** This box is an Intel Core Ultra 9 285HX with a dedicated NPU
+  (`/dev/accel/accel0`, `intel_vpu` driver). A small embedding model (e.g. `bge-small-en`,
+  `e5-small`, `all-MiniLM-L6`, exported to ONNX/IR) runs on it through **OpenVINO's NPU plugin** (or
+  ONNX Runtime with the OpenVINO execution provider), exposed as a tiny OpenAI-compatible
+  `/v1/embeddings` service on its own port. Generation stays on the GPU, embeddings run on the idle
+  NPU, and neither contends for the other.
+
+  **Planned shape (no tool changes):** add `[inference].embed_endpoint` (+ model id) to the config;
+  on `kb_add`, embed each chunk via that endpoint and store the vector alongside the text in
+  `kb.jsonl`; on `kb_search`, embed the query and rank by cosine similarity (a brute-force scan is
+  fine up to tens of thousands of chunks; add an ANN index later). Fall back to BM25 when no embed
+  endpoint is configured, so the KB keeps working with nothing extra running.
 - [ ] **Local parallel delegation** — low value on a single GPU (generation serializes); the swarm
       path above is the one that matters.
 - [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
