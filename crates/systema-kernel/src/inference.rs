@@ -52,15 +52,40 @@ impl InferenceClient {
     }
 
     /// One completion. `tools` is the OpenAI `tools` array (empty = no tools offered).
-    /// Returns the assistant message, which may carry `tool_calls` instead of text.
+    /// Returns the assistant message, which may carry `tool_calls` instead of text. If the local
+    /// engine is unreachable and a `cloud_endpoint` is configured, the request is retried there.
     pub async fn complete(
         &self,
         tier: ModelTier,
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
     ) -> anyhow::Result<ChatMessage> {
-        let url = format!("{}/chat/completions", self.cfg.endpoint.trim_end_matches('/'));
-        let mut body = json!({ "model": self.model_for(tier), "messages": messages, "stream": false });
+        let local = self.complete_at(&self.cfg.endpoint, self.model_for(tier), None, messages, tools).await;
+        match (local, &self.cfg.cloud_endpoint) {
+            (Ok(m), _) => Ok(m),
+            (Err(e), Some(cloud)) => {
+                tracing::warn!("local inference failed ({e:#}); falling back to cloud at {cloud}");
+                let model = self.cfg.cloud_model.as_deref().unwrap_or(self.model_for(tier));
+                let key = std::env::var("SYSTEMA_CLOUD_API_KEY").ok();
+                self.complete_at(cloud, model, key.as_deref(), messages, tools)
+                    .await
+                    .with_context(|| format!("cloud fallback at {cloud} also failed"))
+            }
+            (Err(e), None) => Err(e),
+        }
+    }
+
+    /// One completion against a specific OpenAI-compatible endpoint.
+    async fn complete_at(
+        &self,
+        endpoint: &str,
+        model: &str,
+        api_key: Option<&str>,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+    ) -> anyhow::Result<ChatMessage> {
+        let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+        let mut body = json!({ "model": model, "messages": messages, "stream": false });
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
@@ -70,13 +95,14 @@ impl InferenceClient {
         if let Some(p) = self.cfg.top_p {
             body["top_p"] = json!(p);
         }
-        let resp = self
-            .http
-            .post(&url)
-            .json(&body)
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(key) = api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
             .send()
             .await
-            .with_context(|| format!("is titan-engine running at {}?", self.cfg.endpoint))?
+            .with_context(|| format!("is an OpenAI-compatible server running at {endpoint}?"))?
             .error_for_status()?;
         let parsed: ChatResponse = resp.json().await?;
         let mut msg = parsed.choices.into_iter().next().context("no choices in completion")?.message;
