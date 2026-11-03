@@ -86,8 +86,6 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       path above is the one that matters.
 - [ ] **More triggers.** Add an inbound-swarm-message trigger and daily clock-time (`at = "09:00"`)
       to the file-change and board-post triggers already shipped.
-- [ ] **Vector retrieval for the KB.** Add embeddings behind titan-engine and a vector index, so
-      `kb_search` does semantic recall, not just keyword matching.
 
 ## Tier 2 — strong multipliers
 - [x] **Web search + extract** — `web_extract` returns a page as readable text (HTML stripped), and
