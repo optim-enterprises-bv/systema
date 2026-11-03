@@ -109,8 +109,10 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       real execution. The one capability the broker currently reserves rather than grants.
 - [ ] **Higher-order swarm coordination** — contract-net negotiation, reputation/trust scoring, a
       shared blackboard across peers (the local board, extended over A2A).
-- [ ] **Context compaction + sub-agent isolation** — mid-session compaction and isolated sub-agent
-      contexts (cf. Claude Code), vs today's budget-replace-with-summary.
+- [x] **Context compaction** — past the token budget a session is now **summarized and re-seeded**
+      with that brief (fast model, background priority) instead of being dropped, so long
+      conversations keep their thread. Sub-agent isolation already holds: delegated turns run in
+      their own `task:<id>` sessions. *Next: incremental compaction rather than a single summary.*
 - [ ] **Cloud-model fallback + vision** — overflow to a cloud model and multimodal input; today
       titan-engine serves local fast/deep tiers only.
 
