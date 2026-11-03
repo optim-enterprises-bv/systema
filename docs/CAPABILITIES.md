@@ -97,7 +97,8 @@ persist across restarts. `systema schedule` lists; `systema schedule <name>` run
 - **A2A:** signed agent cards + signed request/response. An inbound request from an unknown peer
   goes to the approvals inbox; grants are one peer × one skill, rate-limited, optionally expiring.
 - **Capability advertisement:** cards carry the node's `models`, `max_context` and `hardware`
-  (set under `[inference]`); `delegate_remote` routes to the most capable provider, and
+  (set under `[inference]`); `delegate_remote` routes to the best provider — **reputation first**
+  (how well a peer has served us, tracked in `reputation.json`), then capability — and
   `delegate_parallel` round-robins across providers to use many nodes' GPUs at once.
 
 ## Self-improvement
@@ -124,6 +125,7 @@ inert text the operator applies by hand.
 | `systema kb <query>` / `kb-add --title T <text>` | Search / seed the knowledge base. |
 | `systema node` | Run the swarm node until ctrl-c. |
 | `systema peers` / `find <skill>` | Discovered peers / DHT lookup by skill (show capabilities). |
+| `systema reputation` | How well each swarm peer has served our requests (ok/fail, score). |
 | `systema send <peer> <agent> --skill <s> <text>` | Direct A2A request to a peer. |
 | `systema inbox` / `approve` / `reject` / `block` / `grants` | Manage inbound requests and grants. |
 | `systema live <agent> <prompt>` / `steer` / `cancel-turn` | Drive turns through a running node. |
@@ -149,7 +151,7 @@ inert text the operator applies by hand.
 
 `identity.key`, `systema.toml`, `agents/`, `workspaces/<agent>/`, `sessions/<key>.json`,
 `control.sock`, `audit.jsonl`, `trust.json`, `inbox.json`, `approvals.json`, `board.jsonl`,
-`tasks.jsonl`, `kb.jsonl`, `runs.jsonl`, `schedules.toml` + `schedule-state.json`, `evals.toml`,
+`tasks.jsonl`, `kb.jsonl`, `runs.jsonl`, `reputation.json`, `schedules.toml` + `schedule-state.json`, `evals.toml`,
 `proposals/`.
 
 Observability: `audit.jsonl` is one line per tool call; `runs.jsonl` is one record per *turn*

@@ -201,6 +201,22 @@ pub struct Node {
     sched_state: systema_kernel::schedule::State,
     /// Per-skill round-robin cursor for spreading parallel delegations across providers.
     rr_cursor: HashMap<String, usize>,
+    /// How well each peer has served our requests (persisted), used to rank swarm providers.
+    reputation: HashMap<String, Rep>,
+}
+
+/// A peer's track record serving our outbound requests. Laplace-smoothed so a peer with no
+/// history sits at a neutral 0.5 rather than a misleading 0 or 1.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Rep {
+    pub ok: u32,
+    pub fail: u32,
+}
+
+impl Rep {
+    pub fn score(&self) -> f64 {
+        (self.ok as f64 + 1.0) / (self.ok as f64 + self.fail as f64 + 2.0)
+    }
 }
 
 impl Node {
@@ -281,6 +297,7 @@ impl Node {
         let inbox: Vec<InboxItem> = read_json(&home.join("inbox.json"))?.unwrap_or_default();
         let (done_tx, done_rx) = mpsc::channel(64);
         let sched_state = systema_kernel::schedule::load_state(&home);
+        let reputation: HashMap<String, Rep> = read_json(&home.join("reputation.json"))?.unwrap_or_default();
         Ok(Self {
             swarm,
             cfg,
@@ -304,6 +321,7 @@ impl Node {
             pending_approvals: Arc::default(),
             sched_state,
             rr_cursor: HashMap::new(),
+            reputation,
         })
     }
 
@@ -660,6 +678,14 @@ impl Node {
             },
             other => serde_json::to_value(&other).map_err(|e| e.to_string()),
         };
+        // Track how well this peer served us, for provider ranking.
+        let rep = self.reputation.entry(peer.to_string()).or_default();
+        if out.is_ok() {
+            rep.ok += 1;
+        } else {
+            rep.fail += 1;
+        }
+        let _ = write_json(&self.home.join("reputation.json"), &self.reputation);
         let _ = reply.send(out);
     }
 
@@ -915,22 +941,24 @@ impl Node {
         let blocked = self.trust.policy().blocked.clone();
         // Providers of this skill, most capable (largest advertised context) first. A single
         // delegation takes the most capable; parallel fan-out round-robins to spread over nodes.
-        let mut ranked: Vec<(u32, PeerId, String)> = self
+        let rep_score = |peer: &PeerId| self.reputation.get(&peer.to_string()).map_or(0.5, Rep::score);
+        let mut ranked: Vec<(f64, u32, PeerId, String)> = self
             .discovered
             .iter()
             .filter(|(peer, _)| !blocked.contains(&peer.to_string()))
             .flat_map(|(peer, cards)| cards.iter().map(move |c| (c.max_context.unwrap_or(0), *peer, c)))
             .filter(|(_, _, c)| c.skills.iter().any(|s| s.id == skill))
-            .map(|(ctx, peer, c)| (ctx, peer, c.name.clone()))
+            .map(|(ctx, peer, c)| (rep_score(&peer), ctx, peer, c.name.clone()))
             .collect();
-        ranked.sort_by(|a, b| b.0.cmp(&a.0)); // most capable first
+        // Best reputation first, then most capable (largest context).
+        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.cmp(&a.1)));
         let chosen = if spread && !ranked.is_empty() {
             let i = self.rr_cursor.entry(skill.clone()).or_insert(0);
             let pick = ranked[*i % ranked.len()].clone();
             *i = i.wrapping_add(1);
-            Some((pick.1, pick.2))
+            Some((pick.2, pick.3))
         } else {
-            ranked.first().map(|(_, p, n)| (*p, n.clone()))
+            ranked.first().map(|(_, _, p, n)| (*p, n.clone()))
         };
         let Some((peer, agent)) = chosen else {
             let _ = reply.send(Err(format!(
@@ -1288,4 +1316,17 @@ fn write_json<T: Serialize>(path: &std::path::Path, value: &T) -> anyhow::Result
     std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod rep_tests {
+    use super::Rep;
+
+    #[test]
+    fn reputation_score_is_laplace_smoothed() {
+        assert!((Rep::default().score() - 0.5).abs() < 1e-9, "no history is neutral");
+        assert!(Rep { ok: 9, fail: 0 }.score() > 0.8, "mostly-ok ranks high");
+        assert!(Rep { ok: 0, fail: 9 }.score() < 0.2, "mostly-fail ranks low");
+        assert!(Rep { ok: 9, fail: 0 }.score() > Rep { ok: 1, fail: 0 }.score(), "more wins > fewer");
+    }
 }
