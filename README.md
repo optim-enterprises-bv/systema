@@ -1,44 +1,90 @@
 # Systema Agentium
 
-A local agentic OS. Agents run as managed processes over one shared GPU (via
-[titan-engine](../src/titan-engine)), and find and message agents on other Systema nodes
-across the internet, forming a swarm.
+**A local-first agentic OS.** Capable agents run on your own machine over one shared GPU (via
+[titan-engine](../src/titan-engine)), coordinate to get work done, and discover and delegate to
+agents on other people's machines — forming a swarm across the internet. Every action an agent takes
+goes through a capability broker that enforces a hard security model, so "capable" never means
+"unsafe".
 
 > *systema agentium*: Latin, "a system of agents".
 
-## Status
+Not a sandbox that locks agents away from your machine, and not a cloud service that ships your data
+off it — your agents are as capable as you let them be, on hardware you own, under rules enforced in
+code.
 
-Scaffold, phase 1–2. Works today:
+## What it can do
 
-- `systema init`: creates `~/.systema` with an ed25519 node identity (`0600`), config and example agents.
-- `systema ask <agent> <prompt>`: one turn through the kernel: append-only session → priority GPU scheduler → titan-engine.
-- `systema do <prompt>`: ask the OS — the orchestrator routes to the best agent (falling back to `operator`).
-- `systema propose`: review the audit log and draft improvement proposals to `~/.systema/proposals/` (applied by hand, never automatically).
-- `systema tasks`: show the task board — sub-tasks agents delegated to each other (via `delegate_task`) and their status.
-- `systema schedule [name]`: list scheduled jobs (from `~/.systema/schedules.toml`), or run one now. The node fires jobs on their interval on its own.
-- `systema kb <query>` / `systema kb-add --title T <text>`: search or seed the shared knowledge base agents use (`kb_search`/`kb_add` tools), BM25 retrieval.
-- `systema node`: libp2p node (QUIC+TCP, relay client + DCUtR, mDNS, Kademlia, GossipSub) that announces
-  signed agent cards and records verified cards from peers.
-- **Agent ↔ agent requests across nodes** (`/systema/a2a/1.0.0`): `systema send <peer> <agent> --skill <id> <text>`.
-  Unknown peers land in your **approvals inbox**; approved peers get rate-limited, per-skill grants; replies are
-  signed by the answering node and verified.
-- **Swarm-wide skill lookup:** `systema find <skill>` queries the Kademlia DHT for providers, fetches their signed
-  cards directly (`/systema/card/1.0.0`) and verifies them; works with mDNS and gossip off, through a bootstrap
-  node (`scripts/e2e-dht-find.sh`). Point nodes at one with `bootstrap = ["/ip4/…/tcp/…/p2p/<id>"]` and run
-  the bootstrap itself with `dht_server = "on"`.
-- **Cross-swarm delegation.** A local agent's `delegate_remote { skill, task }` finds an agent on another node
-  advertising that skill and runs the task there over the signed A2A path (subject to the remote's trust gate),
-  returning its answer — the reply is treated as untrusted outbound, so the Rule of Two applies. Nodes advertise
-  their models / max context / hardware in their cards (set under `[inference]`), and delegation prefers the
-  most capable provider, so heavy or long-context work can run on a bigger node in the swarm.
-- **Relays for nodes behind NAT.** A public node can act as bootstrap + circuit relay; a node behind NAT reserves a
-  slot on it and is advertised (DHT records and cards) at its `…/p2p-circuit/p2p/<id>` address, so others can reach
-  it without port forwarding (`scripts/e2e-relay.sh`). Reservations are kept alive and re-requested if they lapse.
-  DCUtR then upgrades the relayed link to a **direct** connection where the NATs allow it; validate that across two
-  real NATs + a public relay with `scripts/holepunch-cross-nat.sh` (runbook: `docs/CROSS-NAT.md`).
-- `systema peers | inbox | approve | reject | block | grants`: drive the running node over a private Unix socket.
+**Capable local agents.** Agents read, write, `patch` and `search_files`; run commands and a real
+`shell`; `fetch_url`; keep their own persistent `memory`. Each has a workspace and a manifest that is
+the hard ceiling on what it can reach. `systema do "<anything>"` routes to the right agent, and a
+specialist that hits its limits hands the task off to the capable `operator` automatically.
 
-### Running a public bootstrap + relay (e.g. a small VPS)
+**Multi-agent coordination.** Agents hand sub-tasks to each other (`delegate_task`) — tracked on a
+durable task board — and coordinate through a shared message board. Across the swarm,
+`delegate_remote` runs a task on another node that offers a skill, and `delegate_parallel` fans work
+out to many nodes' GPUs at once.
+
+**A swarm across the internet.** Nodes find each other by skill over mDNS and a Kademlia DHT, reach
+each other through circuit relays and DCUtR hole-punching (no port-forwarding), and exchange signed
+agent cards and requests. Cards advertise each node's models, context window and hardware, so
+delegation routes heavy or long-context work to the most capable node.
+
+**Runs on its own.** The node fires agent turns from `schedules.toml` on an interval, a file change,
+or a new board post. `systema propose` reviews the audit log and drafts improvement suggestions for
+you to apply — it can change nothing itself.
+
+**Knowledge and memory that persist.** A shared knowledge base (`kb_add`/`kb_search`) retrieves by
+BM25, or by **semantic vector search** when an embedding service is running (one for the Intel NPU
+ships in [`contrib/npu-embeddings/`](contrib/npu-embeddings/), so embeddings never fight the GPU).
+Sessions are saved and restored across restarts, keeping context — and the prefix cache — warm.
+
+**Web access.** `web_search` queries a local SearXNG instance ([`contrib/searxng/`](contrib/searxng/))
+and `web_extract` reads a page as clean text — so agents can research, not just fetch one URL.
+
+**Safe by construction.** The capability broker brokers every tool call against the agent's manifest;
+credentials, Systema's own state and `/proc` are hard-denied. Per-session taint tracking enforces the
+**Rule of Two** (lethal trifecta): a session that would hold private data *and* untrusted content
+*and* an outbound channel at once is escalated or denied — so an approved stranger can't pull your
+files back out through an agent. (See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).)
+
+**Operable.** A Tokyo-Night cockpit TUI (`systema tui`) to monitor, steer and approve agents;
+`systema history` / `replay` to see any turn's full trace; `systema eval` to regression-test agents
+(substring + LLM-judge assertions); MCP servers behind the same broker.
+
+## Quick start
+
+```sh
+cargo build --release
+sudo install -m755 target/release/systema /usr/local/bin/systema
+sudo install -m755 target/release/systema-tui /usr/local/bin/systema-tui
+
+systema init                       # ~/.systema: ed25519 identity, config, example agents
+systema status                     # is titan-engine up on :1234?
+systema do "how much disk is free, and what's the biggest file in ~/Downloads?"
+systema node                       # join the swarm (LAN via mDNS; add bootstrap peers for WAN)
+systema tui                        # the cockpit
+```
+
+Run the node on login (user service, no root):
+
+```sh
+ln -sf "$PWD/contrib/systema.service" ~/.config/systemd/user/systema.service
+systemctl --user daemon-reload && systemctl --user enable --now systema.service
+```
+
+Two nodes talking to each other (or `scripts/e2e-two-nodes.sh` for the whole flow):
+
+```sh
+systema --home /tmp/a init && systema --home /tmp/b init
+systema --home /tmp/a node &  systema --home /tmp/b node &
+systema --home /tmp/a peers                                   # B's coder, skill code-review
+systema --home /tmp/a send <B-peer-id> coder --skill code-review "fn add(a:i32,b:i32)->i32{a-b}"
+# → pending: held in B's inbox until B approves; then B's coder reviews it and signs the reply
+```
+
+## Running a public bootstrap + relay (a small VPS)
+
+A public node can bootstrap discovery and relay traffic for nodes behind NAT:
 
 ```toml
 [node]
@@ -46,100 +92,31 @@ listen = ["/ip4/0.0.0.0/tcp/4001", "/ip4/0.0.0.0/udp/4001/quic-v1"]
 external_addrs = ["/ip4/<public-ip>/tcp/4001", "/ip4/<public-ip>/udp/4001/quic-v1"]
 dht_server = "on"
 relay_server = true
-
-[node.relay_limits]          # what you donate to others
-max_circuits = 32
-max_circuit_secs = 900       # agent requests can wait minutes for a GPU
-max_circuit_bytes = 4194304
 ```
 
-On nodes behind NAT: `bootstrap = ["/ip4/<public-ip>/tcp/4001/p2p/<relay-id>"]`, `relays = [same]`,
-`dht_server = "off"`. Get the id with `systema id` on the relay.
-- **Capability broker + tools.** Agents call `read_file`, `list_dir`, `write_file`, `run`, `fetch_url`; the kernel
-  checks each call against the agent's manifest, executes it on the agent's behalf and audits it. Credentials,
-  Systema's own state and `/proc` are hard-denied; each agent has a free workspace.
-- **Rule of Two.** Sessions track untrusted content / private data / outbound channel; a call that would complete
-  the lethal trifecta needs your approval (`y/N` in `systema ask`, refused on the node). An approved remote peer
-  therefore can't get your files back through an agent.
-- **Cockpit TUI** (`systema tui`): a Tokyo-Night terminal dashboard to monitor, steer and approve agents on a
-  running node. Live agent list with state, a focus/approval panel, node + swarm vitals, a `tail -f` event log,
-  and a hotbar: `a` ask · `s` steer · `c` cancel · `y`/`n`/`A` answer approvals · `j`/`k` move · `q` quit.
-  Drives the node over its control socket (`watch` stream + `ask`/`steer`/`cancel`/`resolve`).
-- `systema status | agents | cards | id`. Every inbound and tool decision is logged to `~/.systema/audit.jsonl`.
-- Control from the shell too: `systema live <agent> <prompt>`, `steer`, `cancel-turn`, `sessions`, `approvals`,
-  `resolve <id> [--always|--deny]`, `rules`, `watch`.
+Nodes behind NAT then set `bootstrap` and `relays` to `/ip4/<public-ip>/tcp/4001/p2p/<relay-id>`
+(`systema id` on the relay) and `dht_server = "off"`. DCUtR upgrades the relayed link to a direct one
+where the NATs allow it — validate across two real NATs with `scripts/holepunch-cross-nat.sh`
+([runbook](docs/CROSS-NAT.md)).
 
-- **MCP servers** (stdio) behind the same broker. Declare them in `~/.systema/systema.toml`, then add
-  `mcp = ["notes"]` to an agent's `[capabilities]`:
+## Documentation
 
-  ```toml
-  [mcp.notes]
-  command = "python3"
-  args = ["-I", "/path/to/server.py"]
-  env = { NOTES_DIR = "/home/me/notes" }   # the only env vars the server sees
-  tools = ["add_note", "list_notes"]        # optional allowlist
-  ask_tools = []                           # tools that always need approval
-  # Trifecta legs a call adds (default all true = always ask):
-  untrusted = false
-  private = true
-  outbound = false
-  ```
+- **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** — the full reference: every tool, CLI command and
+  config key, and the state files.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the security model, enforced in code.
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** — where Systema stands against other agentic systems, what's
+  shipped and what's next.
 
-Not yet: microVM sandbox for public agents, task boards, HTTP A2A gateway, reputation.
-See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the full reference (every tool, CLI command and
-config key), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the security model, and
-[docs/ROADMAP.md](docs/ROADMAP.md) for where Systema stands against other agentic systems and what's next.
-
-## Install
-
-```sh
-cargo build --release
-sudo install -m755 target/release/systema /usr/local/bin/systema
-sudo install -m755 target/release/systema-tui /usr/local/bin/systema-tui
-```
-
-Run the node on login (optional, user service — no root):
-
-```sh
-ln -sf "$PWD/contrib/systema.service" ~/.config/systemd/user/systema.service
-systemctl --user daemon-reload && systemctl --user enable --now systema.service
-systema tui
-```
-
-See [`contrib/systema.service`](contrib/systema.service) for details.
-
-## Quick start
-
-```sh
-cargo build --release
-./target/release/systema init
-./target/release/systema status            # is titan-engine up on :1234?
-./target/release/systema ask coder "explain this regex: ^a+b?$"
-./target/release/systema node              # join the swarm (LAN via mDNS; add bootstrap peers in systema.toml)
-```
-
-Two nodes on one machine (or run `scripts/e2e-two-nodes.sh` for the whole flow):
-
-```sh
-systema --home /tmp/a init && systema --home /tmp/b init
-systema --home /tmp/a node &  systema --home /tmp/b node &
-systema --home /tmp/a peers                                   # B's coder, skill code-review
-systema --home /tmp/a send <B-peer-id> coder --skill code-review "fn add(a:i32,b:i32)->i32{a-b}"
-# → pending: held in the remote inbox as 84fae4b0
-systema --home /tmp/b inbox
-systema --home /tmp/b approve 84fae4b0 --per-hour 10
-systema --home /tmp/a send <B-peer-id> coder --skill code-review "fn add(a:i32,b:i32)->i32{a-b}"
-# → "The function is named `add` but performs subtraction…"
-```
+**Not yet:** a microVM sandbox for public (swarm-facing) agents, an HTTP A2A gateway, reputation.
 
 ## Layout
 
 | crate | role |
 |---|---|
 | `systema-proto` | A2A-shaped `AgentCard` / `Message`, `Signed<T>` envelopes (ed25519, nonce, timestamp, domain-separated) |
-| `systema-trust` | trust gate: grants per peer×skill, rate limits, expiry, blocklist, replay guard, no model-initiated forwarding |
-| `systema-kernel` | config, agent manifests, priority GPU scheduler, append-only sessions, local bus, titan-engine client |
-| `systema-node` | libp2p swarm: discovery, NAT traversal, card gossip |
-| `systema-cli` | the `systema` binary |
+| `systema-trust` | the trust gate: grants per peer×skill, rate limits, expiry, blocklist, replay guard, no model-initiated forwarding |
+| `systema-kernel` | config, agent manifests, the capability broker, priority GPU scheduler, append-only + persisted sessions, tools, board/tasks/KB/runs, titan-engine client |
+| `systema-node` | the libp2p swarm: discovery, NAT traversal, card gossip, scheduling, the A2A/cross-swarm bridge |
+| `systema-cli` | the `systema` binary, and the `systema-tui` cockpit |
 
 Agent manifests live in `~/.systema/agents/*.toml` (examples in [`agents/`](agents/)).
