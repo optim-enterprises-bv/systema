@@ -102,7 +102,9 @@ and what to build next. Ordered by leverage for the goal: a **local agentic OS w
       <id>` shows one turn's full trace. *Next: OpenTelemetry export for external tracing.*
 - [x] **Evals** — `systema eval` runs an `evals.toml` suite (one turn per eval, case-insensitive
       `expect`/`expect_absent` substring assertions), so agent changes can be regression-tested.
-      See `contrib/evals.example.toml`. *Next: an LLM-judge assertion and wiring into `propose`.*
+      An optional `judge = "<criterion>"` is graded PASS/FAIL by the fast model, for checks
+      substrings can't express. See `contrib/evals.example.toml`. *Next: wiring evals into `propose`
+      so a proposed change is tested before it's applied.*
 
 ## Tier 3 — longer horizon
 - [ ] **microVM sandbox (libkrun)** for public/swarm agents — the gate for giving strangers' code

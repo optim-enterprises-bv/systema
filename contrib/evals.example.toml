@@ -20,3 +20,10 @@ name = "routing-stays-local"
 # no agent → routed like `systema do`; must not leak that it can't do local work
 prompt = "List the files in my home directory."
 expect_absent = ["no agent", "cannot", "not permitted"]
+
+[[eval]]
+name = "judge-explains-bug"
+agent = "coder"
+prompt = "Does this function have a bug? fn add(a: i32, b: i32) -> i32 { a - b }"
+# An LLM-judge criterion (graded PASS/FAIL by the fast model) for things substrings can't express:
+judge = "The answer correctly identifies that the function subtracts instead of adds."

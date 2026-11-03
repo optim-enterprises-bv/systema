@@ -250,7 +250,8 @@ async fn main() -> anyhow::Result<()> {
                     Ok(o) => {
                         if o.pass {
                             passed += 1;
-                            println!("PASS  {:<20} [{}]", o.name, o.agent);
+                            let j = if o.judge.is_some() { "  (judge: PASS)" } else { "" };
+                            println!("PASS  {:<20} [{}]{j}", o.name, o.agent);
                         } else {
                             failed += 1;
                             let mut why = Vec::new();
@@ -259,6 +260,9 @@ async fn main() -> anyhow::Result<()> {
                             }
                             if !o.forbidden.is_empty() {
                                 why.push(format!("forbidden {:?}", o.forbidden));
+                            }
+                            if let Some(v) = o.judge.as_ref().filter(|v| !v.to_uppercase().starts_with("PASS")) {
+                                why.push(v.clone());
                             }
                             println!("FAIL  {:<20} [{}]  {}", o.name, o.agent, why.join("; "));
                             println!("      → {}", o.answer.replace('\n', " ").chars().take(160).collect::<String>());
