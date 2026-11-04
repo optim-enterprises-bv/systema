@@ -1,5 +1,14 @@
 # Systema roadmap
 
+> See also [docs/IIi-FUSION.md](docs/IIi-FUSION.md): folding useful parts of the iii engine's model
+> (generic triggers, a composable function surface, a browser console) into Systema natively.
+
+- [x] **Browser console** (`systema-console`) — a small `axum` server over the existing
+      control-socket protocol: agent catalog, swarm peers, approvals inbox, sessions, and a live
+      Server-Sent-Events trace feed in a browser, alongside the TUI. No new security surface: every
+      request is forwarded verbatim through the same trust gate and broker. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 1.
+
 Where Systema stands against other agentic systems (Claude Code / Agent SDK, Hermes, OpenAI
 Codex/Swarm, LangGraph, CrewAI, Google ADK + Agent Engine, Letta/MemGPT, the A2A/MCP ecosystem),
 and what to build next. Ordered by leverage for the goal: a **local agentic OS with a swarm**.
