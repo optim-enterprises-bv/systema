@@ -61,6 +61,14 @@
   <div class="col">
     <div class="panel" id="agents-panel"><h2>Agents</h2><div id="agents"></div></div>
     <div class="panel" id="peers-panel"><h2>Swarm peers</h2><div id="peers"></div></div>
+    <div class="panel" id="mcp-panel">
+      <h2>MCP servers (runtime)</h2>
+      <div id="mcp-servers"></div>
+      <input id="mcp-name" placeholder="name">
+      <input id="mcp-command" placeholder="command, e.g. npx">
+      <input id="mcp-args" placeholder="args, comma-separated">
+      <button class="ghost" onclick="addMcpServer()">Add / replace</button>
+    </div>
   </div>
   <div class="col">
     <div class="panel" style="flex: 0 0 auto;">
@@ -201,8 +209,35 @@ function startEvents() {
   es.onerror = () => { es.close(); setTimeout(startEvents, 3000); };
 }
 
+async function refreshMcpServers() {
+  try {
+    const list = await api('/api/mcp-servers');
+    const arr = Array.isArray(list) ? list : (list.servers || []);
+    document.getElementById('mcp-servers').innerHTML = arr.map(s => `
+      <div class="row">
+        <b>${esc(s.name)}</b> <span class="muted">${esc(s.command)} ${esc((s.args||[]).join(' '))}</span>
+        <button class="deny" onclick="removeMcpServer('${esc(s.name)}')">Remove</button>
+      </div>`
+    ).join('') || '<div class="muted">none configured</div>';
+  } catch (e) { document.getElementById('mcp-servers').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+async function addMcpServer() {
+  const name = document.getElementById('mcp-name').value.trim();
+  const command = document.getElementById('mcp-command').value.trim();
+  const args = document.getElementById('mcp-args').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!name || !command) return;
+  await api('/api/mcp-servers', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ name, config: { command, args, env: {}, tools: null, ask_tools: [],
+      mode: 'allow', private: true, outbound: true, untrusted: true } }) });
+  refreshMcpServers();
+}
+async function removeMcpServer(name) {
+  await fetch('/api/mcp-servers/' + encodeURIComponent(name), { method: 'DELETE' });
+  refreshMcpServers();
+}
+
 function refreshAll() {
-  refreshStatus(); refreshAgents(); refreshPeers(); refreshApprovals(); refreshInbox(); refreshSessions();
+  refreshStatus(); refreshAgents(); refreshPeers(); refreshApprovals(); refreshInbox(); refreshSessions(); refreshMcpServers();
 }
 refreshAll();
 setInterval(refreshAll, 4000);

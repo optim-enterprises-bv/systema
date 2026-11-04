@@ -21,7 +21,7 @@ you can run with nothing else installed.
 | Trigger (generic 'run this when X') -- cron, HTTP, queue, state-change, comment, anything | New entry points without new code per integration | `schedule.rs`: exactly three fixed kinds (`every`, `on_change`, `on_board`) |
 | Function (any worker, any language, one stable id) | A uniform call surface for humans, agents and other processes | Tools are compiled into `systema-kernel::tools`; MCP (`mcp.rs`) is the only pluggable surface |
 | Console (chat, trace explorer, worker catalog, injectable pages) | A browser-reachable live view and control panel | `systema-tui`: a terminal cockpit only, nothing over HTTP |
-| Compose (`compose::add` at runtime) | Extend a running system without a restart | None -- agents/capabilities are fixed at `systema node` startup |
+| Compose (`compose::add` at runtime) | Extend a running system without a restart | Shipped for MCP servers (Phase 4); agent manifests/capabilities are still fixed at `systema node` startup |
 | RBAC proxy / `pre-trigger` hook | An outer policy layer independent of what's being called | `capability.rs`'s broker is the *only* layer, baked into the kernel |
 
 Systema's own `docs/ROADMAP.md` already named two of these as open items before this doc existed:
@@ -119,16 +119,37 @@ A vetoed call is denied, audited and emitted exactly like a broker denial, so no
 (the TUI, `systema-console`'s live trace, `systema history`) can tell the two apart -- which is the
 point: the hook layer and the broker present one uniform decision surface to everything else.
 
-## Phase 4 -- pluggable functions (longer horizon)
+## Phase 4 -- pluggable functions
 
-iii's biggest structural difference is that *any* process in *any* language can register a
-function at runtime. Systema's tools are compiled in. A minimal, optional step toward this: let
-`mcp.rs`'s existing "external tool server" pattern (already how MCP servers are wired in) become
-the general extension point -- a new capability class, `capabilities.workers`, naming local
-processes that speak a tiny length-prefixed JSON protocol and register tool names the broker then
-gates exactly like any built-in tool. This is deliberately the last phase: it is the one that most
-resembles handing out exec rights, and the broker's "nothing an agent does can widen its own
-capabilities" principle (`ROADMAP.md`) applies to it in full.
+**Revised approach, shipped in this change.** The original plan here called for a *new*
+length-prefixed JSON protocol for external "worker" processes. On inspection that would have
+duplicated what MCP already *is*: an external process, in any language, registering named tools
+over stdio, gated by the broker exactly like a built-in tool. Inventing a second protocol next to
+it would be pure risk (a new attack surface) for no new capability. So Phase 4 instead makes the
+existing MCP integration **hot-pluggable** -- iii's `compose::add` primitive ("extend a live
+system without a restart"), scoped to the one place Systema already has an external-process
+extension point.
+
+`Broker.mcp` moved from a field fixed at `Broker::new` to an `RwLock`, with `add_mcp_server` /
+`remove_mcp_server` / `list_mcp_servers`. Three new control-socket commands reach it without a
+node restart: `Control::McpServers` (list), `Control::McpAdd { name, config }` (add or replace --
+the same shape as `[mcp.<name>]` in `systema.toml`), `Control::McpRemove { name }` (remove, and
+kill the process if one is running, via a new `McpManager::remove`). `systema-console` exposes all
+three (`GET`/`POST /api/mcp-servers`, `DELETE /api/mcp-servers/<name>`) with a small panel in the
+dashboard.
+
+Crucially, **this never widens what an agent may call.** `Broker::check`'s
+`caps.mcp.contains(server)` gate is unaffected -- it is still read from the agent's manifest, fixed
+at `systema node` startup. Adding a server at runtime only ever supplies (or swaps) the
+*implementation* behind a name an operator already put in some agent's `capabilities.mcp` ahead of
+time; a name no manifest lists is still unreachable no matter how many servers exist. This is
+exactly "nothing an agent does can widen its own capabilities" (`ROADMAP.md`) applied to the one
+runtime-extension point Systema has: the *operator* extends the system live; the *agent's* ceiling
+never moves. Covered by `capability::tests::mcp_servers_can_be_added_and_removed_at_runtime`.
+
+A real `capabilities.workers` + bespoke-protocol extension point, if ever needed for a capability
+MCP can't express, remains future work -- but should only be built once a concrete need outgrows
+what the hot-pluggable MCP roster above already covers.
 
 ## License note
 

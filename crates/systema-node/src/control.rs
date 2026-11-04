@@ -56,6 +56,15 @@ pub enum Control {
     Agents,
     /// Node vitals for status panels: peer id, addresses, counts.
     Status,
+    /// The node's current `[mcp.*]` server roster (startup-configured plus any added at
+    /// runtime). See Phase 4 of docs/IIi-FUSION.md.
+    McpServers,
+    /// Add or replace an MCP server at runtime -- the same shape as `[mcp.<name>]` in
+    /// systema.toml, without a restart. Only ever supplies/swaps the implementation behind a
+    /// name; an agent's manifest must already list `name` under `capabilities.mcp` to reach it.
+    McpAdd { name: String, config: systema_kernel::mcp::McpServerConfig },
+    /// Remove a server (startup-configured or runtime-added) and stop its process if running.
+    McpRemove { name: String },
     /// Fire every enabled job whose `on_http` names this webhook (see `schedule::http_jobs`).
     /// Returns `{ "fired": [...], "skipped": [...] }` (skipped: already running, or unknown
     /// agent). A no-op, not an error, when no job names this webhook.

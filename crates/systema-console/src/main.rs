@@ -104,6 +104,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/find", post(find))
         .route("/api/forget", post(forget))
         .route("/api/webhook/{name}", post(webhook))
+        .route("/api/mcp-servers", get(mcp_servers).post(mcp_add))
+        .route("/api/mcp-servers/{name}", axum::routing::delete(mcp_remove))
         .route("/api/events", get(events))
         .with_state(state);
 
@@ -249,6 +251,26 @@ async fn forget(State(state): State<AppState>, Json(req): Json<ForgetReq>) -> Re
 /// job in `schedules.toml`. The path segment is the whole request; no body is required.
 async fn webhook(State(state): State<AppState>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
     call(state, Control::FireWebhook { name }).await
+}
+
+async fn mcp_servers(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::McpServers).await
+}
+
+#[derive(Deserialize)]
+struct McpAddReq {
+    name: String,
+    config: systema_kernel::mcp::McpServerConfig,
+}
+/// `POST /api/mcp-servers` -- add or replace an MCP server at runtime (Phase 4 of
+/// docs/IIi-FUSION.md). Still capability-gated: an agent can only reach `name` once its own
+/// manifest already lists it under `capabilities.mcp`.
+async fn mcp_add(State(state): State<AppState>, Json(req): Json<McpAddReq>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::McpAdd { name: req.name, config: req.config }).await
+}
+
+async fn mcp_remove(State(state): State<AppState>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::McpRemove { name }).await
 }
 
 /// Live trace: bridges the control socket's `Watch` line stream to the browser as

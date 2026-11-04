@@ -17,6 +17,12 @@
       on every tool call; a hook can only veto (never approve). Shipped with `RateLimiter`
       (`[policy] rate_limit_per_minute`) as a wall-clock backstop independent of manifests. See
       [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 3.
+- [x] **Hot-pluggable MCP servers.** `Control::McpServers`/`McpAdd`/`McpRemove` (and
+      `systema-console`'s MCP panel) add, replace, or remove an `[mcp.<name>]` server without a
+      node restart -- Systema's version of iii's `compose::add`. Never widens what an agent may
+      call: the manifest's `capabilities.mcp` allowlist is unaffected. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 4.
+
 
 
 

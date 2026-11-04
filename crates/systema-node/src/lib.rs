@@ -942,6 +942,44 @@ impl Node {
                     "pending_approvals": self.pending_approvals.lock().unwrap().len(),
                 }))
             }
+            Control::McpServers => Ok(json!(
+                self.kernel
+                    .broker
+                    .list_mcp_servers()
+                    .into_iter()
+                    .map(|(name, cfg)| json!({
+                        "name": name,
+                        "command": cfg.command,
+                        "args": cfg.args,
+                        "tools": cfg.tools,
+                        "mode": format!("{:?}", cfg.mode).to_lowercase(),
+                        "private": cfg.private,
+                        "outbound": cfg.outbound,
+                        "untrusted": cfg.untrusted,
+                    }))
+                    .collect::<Vec<_>>()
+            )),
+            Control::McpAdd { name, config } => {
+                info!(mcp_server = %name, "adding/replacing mcp server at runtime");
+                // Dropping any live client (async: the manager's map is a tokio Mutex) must
+                // happen off this sync handler, like `Control::Route` does for its model call.
+                let kernel = self.kernel.clone();
+                tokio::spawn(async move {
+                    kernel.mcp.remove(&name).await;
+                    kernel.broker.add_mcp_server(name.clone(), config);
+                    let _ = reply.send(Ok(json!({ "added": name })));
+                });
+                return;
+            }
+            Control::McpRemove { name } => {
+                let kernel = self.kernel.clone();
+                tokio::spawn(async move {
+                    kernel.mcp.remove(&name).await;
+                    let existed = kernel.broker.remove_mcp_server(&name);
+                    let _ = reply.send(Ok(json!({ "removed": name, "existed": existed })));
+                });
+                return;
+            }
             Control::FireWebhook { name } => {
                 let mut fired = Vec::new();
                 let mut skipped = Vec::new();

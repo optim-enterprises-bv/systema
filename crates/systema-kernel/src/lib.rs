@@ -1044,7 +1044,7 @@ impl Kernel {
                 warn!(agent = %m.name, %server, "manifest names an mcp server that is not configured");
                 continue;
             };
-            let client = match self.mcp.get(server, cfg, &self.broker.mcp_dir(server)).await {
+            let client = match self.mcp.get(server, &cfg, &self.broker.mcp_dir(server)).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(%server, "mcp server unavailable: {e:#}");
@@ -1069,7 +1069,7 @@ impl Kernel {
         let cfg = self.broker.mcp_server(server).context("mcp server not configured")?;
         let args: serde_json::Value =
             if arguments.trim().is_empty() { serde_json::json!({}) } else { serde_json::from_str(arguments).context("arguments are not JSON")? };
-        let client = self.mcp.get(server, cfg, &self.broker.mcp_dir(server)).await?;
+        let client = self.mcp.get(server, &cfg, &self.broker.mcp_dir(server)).await?;
         client.call(tool, args).await
     }
 
