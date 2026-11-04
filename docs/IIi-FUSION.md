@@ -98,13 +98,26 @@ systema-console --home ~/.systema --port 8787
 None of this touches the capability broker: a triggered turn still goes through the exact same
 `check_capability` / Rule-of-Two path as an operator-typed prompt.
 
-## Phase 3 -- an outer policy hook (not yet done)
+## Phase 3 -- an outer policy hook
 
-iii's `pre-trigger` hook (deny/hold/rewrite before a call reaches its target) is a useful *second*
-layer, not a replacement for the broker. Add a `Vec<Box<dyn PolicyHook>>` the kernel consults
-before the broker on every tool request -- e.g. a hook that rate-limits by wall-clock regardless of
-manifest, or one that logs to an external SIEM. The broker remains the ceiling; hooks can only ever
-veto or slow down a call, never approve something the manifest forbids.
+**Shipped in this change:** `crates/systema-kernel/src/policy.rs` defines `PolicyHook`, a trait
+the kernel consults in `broker_call` *before* `Broker::check` -- a veto there never reaches the
+broker, the operator-ask path, or the manifest at all. A hook can only narrow what the broker
+would otherwise decide; it can never turn a broker `Ask`/`Deny` into an `Allow` (there is no hook
+return value that means "approve" -- only `Some(reason)` to veto or `None` to pass through).
+
+Shipped with one concrete hook, `RateLimiter`: caps tool calls per agent per rolling minute,
+regardless of what the manifest or broker would otherwise allow -- a wall-clock backstop against a
+runaway loop or a misbehaving agent burning GPU time, a dimension (call *rate*) the capability
+model has no concept of. Configured via `[policy] rate_limit_per_minute = <n>` in `systema.toml`
+(`0`, the default, disables it). `Kernel::with_policy_hook` adds further hooks programmatically
+(e.g. an external SIEM sink) before the kernel is wrapped in `Arc` -- hooks are fixed for the
+kernel's lifetime, consistent with "nothing an agent does can widen its own capabilities": policy
+is operator-set at startup, never runtime-mutable from inside a turn.
+
+A vetoed call is denied, audited and emitted exactly like a broker denial, so nothing downstream
+(the TUI, `systema-console`'s live trace, `systema history`) can tell the two apart -- which is the
+point: the hook layer and the broker present one uniform decision surface to everything else.
 
 ## Phase 4 -- pluggable functions (longer horizon)
 

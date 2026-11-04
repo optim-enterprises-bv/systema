@@ -12,6 +12,7 @@ pub mod inference;
 pub mod kb;
 pub mod manifest;
 pub mod mcp;
+pub mod policy;
 pub mod runs;
 pub mod sandbox;
 pub mod schedule;
@@ -37,6 +38,7 @@ pub use capability::{Broker, Decision, ToolRequest, TrustState};
 pub use config::Config;
 pub use events::{Event, EventKind};
 pub use manifest::{AgentManifest, ModelTier, Priority};
+pub use policy::{PolicyHook, RateLimiter};
 
 use bus::Bus;
 use inference::InferenceClient;
@@ -97,6 +99,21 @@ pub struct Kernel {
     swarm: OnceLock<SwarmTx>,
     agents: HashMap<String, AgentManifest>,
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
+    /// Outer policy layer, consulted before the broker on every tool call. See `policy` module
+    /// doc and docs/IIi-FUSION.md Phase 3. Empty unless `[policy]` in `systema.toml` enables one
+    /// or a caller adds one via `with_policy_hook` before the kernel is wrapped in `Arc`.
+    policy_hooks: Vec<Box<dyn PolicyHook>>,
+}
+
+/// Build the policy hooks implied by `[policy]` in `systema.toml`. Operator-configured only --
+/// see `Kernel::with_policy_hook` for adding one programmatically (e.g. embedding Systema with a
+/// custom SIEM sink).
+fn default_policy_hooks(cfg: &config::PolicyConfig) -> Vec<Box<dyn PolicyHook>> {
+    let mut hooks: Vec<Box<dyn PolicyHook>> = Vec::new();
+    if cfg.rate_limit_per_minute > 0 {
+        hooks.push(Box::new(RateLimiter::new(cfg.rate_limit_per_minute)));
+    }
+    hooks
 }
 
 impl Kernel {
@@ -135,8 +152,18 @@ impl Kernel {
             bus: Bus::default(),
             agents,
             sessions: Mutex::new(HashMap::new()),
+            policy_hooks: default_policy_hooks(&config.policy),
             config,
         })
+    }
+
+    /// Register an additional outer policy hook (see the `policy` module doc). Call this before
+    /// the kernel is wrapped in `Arc` -- hooks are fixed for the kernel's lifetime, consistent
+    /// with "nothing an agent does can widen its own capabilities": policy is operator-set at
+    /// startup, never runtime-mutable from inside a turn.
+    pub fn with_policy_hook(mut self, hook: Box<dyn PolicyHook>) -> Self {
+        self.policy_hooks.push(hook);
+        self
     }
 
     pub fn agents(&self) -> impl Iterator<Item = &AgentManifest> {
@@ -648,6 +675,32 @@ impl Kernel {
         approver: &dyn Approver,
         cancel: &CancellationToken,
     ) -> String {
+        // Outer policy layer, consulted first: a veto here never reaches the broker, the
+        // operator-ask path, or the manifest at all -- see the `policy` module doc. Hooks can
+        // only narrow what the broker would otherwise decide, never widen it.
+        for hook in &self.policy_hooks {
+            if let Some(reason) = hook.before_check(&m.name, &req, &session.trust) {
+                let outcome = format!("denied: {reason}");
+                info!(agent = %m.name, tool = %req.summary(), %outcome, "policy hook");
+                self.audit(&m.name, &req, &session.trust, &outcome);
+                self.emit(
+                    Some(&m.name),
+                    Some(session_key),
+                    EventKind::ToolResult { request: req.summary(), outcome: outcome.clone(), trust: session.trust },
+                );
+                self.run_steps
+                    .lock()
+                    .await
+                    .entry(session_key.to_string())
+                    .or_default()
+                    .push(runs::Step { tool: req.summary(), outcome: outcome.clone() });
+                return if session.trust.untrusted {
+                    "not permitted in this session. Do not retry; tell the requester you cannot do this.".into()
+                } else {
+                    format!("{outcome}. Do not retry the same request; explain to the user what you need instead.")
+                };
+            }
+        }
         let checked = self.broker.check(m, &session.trust, &req);
         let (run, outcome) = match &checked.decision {
             Decision::Allow => (true, "allowed".to_string()),

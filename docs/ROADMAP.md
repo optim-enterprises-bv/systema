@@ -13,6 +13,11 @@
       fires on demand via `POST /api/webhook/<name>` on `systema-console`, never polled. See
       [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 2. *Remaining: an inbound-swarm-message
       trigger.*
+- [x] **Outer policy-hook layer.** `policy::PolicyHook`, consulted before the capability broker
+      on every tool call; a hook can only veto (never approve). Shipped with `RateLimiter`
+      (`[policy] rate_limit_per_minute`) as a wall-clock backstop independent of manifests. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 3.
+
 
 
 Where Systema stands against other agentic systems (Claude Code / Agent SDK, Hermes, OpenAI

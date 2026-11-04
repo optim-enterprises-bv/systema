@@ -21,6 +21,11 @@ pub struct Config {
     /// microVM sandbox for swarm-facing (public) agents.
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    /// Outer policy hooks, consulted before the capability broker on every tool call. Backstops
+    /// independent of what a manifest allows -- see `crate::policy` and docs/IIi-FUSION.md
+    /// Phase 3. Not a replacement for the broker: a hook can only veto, never approve.
+    #[serde(default)]
+    pub policy: PolicyConfig,
     /// SYSTEMA_HOME this config was loaded from (not stored in the file).
     #[serde(skip)]
     pub home: PathBuf,
@@ -42,6 +47,21 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self { enabled: false, image: "docker.io/library/alpine:latest".into(), runtime: "krun".into(), timeout_secs: 120 }
+    }
+}
+
+/// `[policy]` in `systema.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PolicyConfig {
+    /// Tool calls one agent may make per rolling minute, regardless of its manifest; `0` (the
+    /// default) disables the cap entirely.
+    pub rate_limit_per_minute: u32,
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        Self { rate_limit_per_minute: 0 }
     }
 }
 
@@ -150,6 +170,7 @@ impl Default for Config {
             mcp: Default::default(),
             search_endpoint: None,
             sandbox: SandboxConfig::default(),
+            policy: PolicyConfig::default(),
             home: home_dir(),
         }
     }
