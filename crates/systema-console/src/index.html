@@ -4,58 +4,142 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Systema Console</title>
+<meta name="color-scheme" content="light dark">
+<script>
+  // Same boot-time theme resolution iii's console uses: stored choice, else OS preference,
+  // applied before first paint so there is no flash of the wrong theme.
+  (() => {
+    const prefersDark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    let theme;
+    try {
+      const stored = localStorage.getItem('systema-theme');
+      theme = stored === 'dark' || stored === 'light' ? stored : (prefersDark() ? 'dark' : 'light');
+    } catch { theme = prefersDark() ? 'dark' : 'light'; }
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  })();
+</script>
 <style>
+  /* Token names and values match iii's own console (see docs/IIi-FUSION.md) so the two read as
+     one family: a layered panel/surface/ink scale, a 6/8px radius step, Inter for UI text and
+     the system mono stack for anything technical -- not a from-scratch theme. */
   :root {
-    --bg: #1a1b26; --bg2: #24283b; --fg: #c0caf5; --dim: #565f89;
-    --accent: #7aa2f7; --ok: #9ece6a; --err: #f7768e; --warn: #e0af68;
+    --radius-sm: 6px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+      "Noto Sans", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+  }
+  :root[data-theme="light"] {
+    --color-bg: #f5f5f5;
+    --color-panel: #fcfcfc;
+    --color-panel-raised: #ffffff;
+    --color-ink: #0a0a0a;
+    --color-ink-faint: #686868;
+    --color-ink-ghost: #909090;
+    --color-surface: rgba(10, 10, 10, 0.05);
+    --color-surface-hover: rgba(10, 10, 10, 0.09);
+    --color-edge: rgba(10, 10, 10, 0.1);
+    --color-accent: #383838;
+    --color-accent-fg: #f5f5f5;
+    --color-ok: #356f3d;
+    --color-ok-muted: rgba(53, 111, 61, 0.12);
+    --color-warn: #a87a00;
+    --color-warn-muted: rgba(168, 122, 0, 0.12);
+    --color-alert: #c60021;
+    --color-alert-muted: rgba(198, 0, 33, 0.1);
+  }
+  :root[data-theme="dark"] {
+    --color-bg: #0a0a0a;
+    --color-panel: #111111;
+    --color-panel-raised: #171717;
+    --color-ink: #ededed;
+    --color-ink-faint: #a6a6a6;
+    --color-ink-ghost: #6f6f6f;
+    --color-surface: rgba(255, 255, 255, 0.06);
+    --color-surface-hover: rgba(255, 255, 255, 0.1);
+    --color-edge: rgba(255, 255, 255, 0.12);
+    --color-accent: #dedede;
+    --color-accent-fg: #070909;
+    --color-ok: #36c98f;
+    --color-ok-muted: rgba(54, 201, 143, 0.15);
+    --color-warn: #f5a524;
+    --color-warn-muted: rgba(245, 165, 36, 0.15);
+    --color-alert: #f05d68;
+    --color-alert-muted: rgba(240, 93, 104, 0.15);
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-    background: var(--bg); color: var(--fg); font-size: 13px;
+    margin: 0; font-family: var(--font-sans); font-size: 13px;
+    background: var(--color-bg); color: var(--color-ink);
   }
   header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 16px; background: var(--bg2); border-bottom: 1px solid #333a56;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 16px; background: var(--color-panel); border-bottom: 1px solid var(--color-edge);
   }
-  header h1 { font-size: 15px; margin: 0; color: var(--accent); font-weight: 600; }
-  #status-line { color: var(--dim); }
+  header h1 {
+    font-size: 14px; margin: 0; font-weight: 600; display: flex; align-items: center; gap: 8px;
+  }
+  header h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-ok); display: inline-block; }
+  #status-line { color: var(--color-ink-faint); font-family: var(--font-mono); font-size: 12px; }
+  #theme-toggle {
+    background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-edge);
+    border-radius: var(--radius-sm); padding: 5px 10px; font-size: 12px; cursor: pointer;
+  }
   main {
-    display: grid; grid-template-columns: 260px 1fr 320px; gap: 10px;
-    padding: 10px; height: calc(100vh - 44px);
+    display: grid; grid-template-columns: 280px 1fr 320px; gap: 12px;
+    padding: 12px; height: calc(100vh - 49px); max-width: 1600px; margin: 0 auto;
   }
-  .col { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .col { display: flex; flex-direction: column; gap: 12px; overflow: hidden; min-width: 0; }
   .panel {
-    background: var(--bg2); border: 1px solid #333a56; border-radius: 6px;
-    padding: 10px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
+    background: var(--color-panel-raised); border: 1px solid var(--color-edge);
+    border-radius: var(--radius-lg); padding: 12px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
   }
+  .panel.fixed { flex: 0 0 auto; }
   .panel h2 {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--dim); margin: 0 0 8px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+    color: var(--color-ink-faint); margin: 0 0 10px;
   }
-  .row { padding: 5px 0; border-bottom: 1px solid #292e42; }
-  .row:last-child { border-bottom: none; }
-  .muted { color: var(--dim); }
+  .row {
+    padding: 8px 10px; margin: 0 -2px 4px; border-radius: var(--radius-sm);
+  }
+  .row:hover { background: var(--color-surface-hover); }
+  .row b { font-weight: 600; }
+  .muted { color: var(--color-ink-ghost); }
   button {
-    background: var(--accent); color: #1a1b26; border: none; border-radius: 4px;
-    padding: 4px 10px; font-family: inherit; font-size: 12px; cursor: pointer; margin-right: 6px;
+    background: var(--color-accent); color: var(--color-accent-fg); border: none;
+    border-radius: var(--radius-sm); padding: 6px 12px; font-family: var(--font-sans);
+    font-size: 12px; font-weight: 500; cursor: pointer; margin-right: 6px; margin-top: 4px;
   }
-  button.deny { background: var(--err); }
-  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:hover { opacity: .85; }
+  button.deny { background: var(--color-alert-muted); color: var(--color-alert); }
+  button.ghost { background: transparent; color: var(--color-ink); border: 1px solid var(--color-edge); }
   textarea, input, select {
-    width: 100%; background: var(--bg); color: var(--fg); border: 1px solid #333a56;
-    border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px; margin-bottom: 6px;
+    width: 100%; background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-edge);
+    border-radius: var(--radius-sm); padding: 7px 9px; font-family: var(--font-sans); font-size: 12px;
+    margin-bottom: 6px;
   }
-  #events { font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-  .ev { padding: 3px 0; border-bottom: 1px solid #1f2335; }
-  .ev .k { color: var(--accent); }
-  #ask-answer { white-space: pre-wrap; margin-top: 8px; }
+  textarea:focus, input:focus, select:focus { outline: 2px solid var(--color-ink-ghost); outline-offset: -1px; }
+  #events { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .ev { padding: 6px 0; border-bottom: 1px solid var(--color-edge); }
+  .ev .k { color: var(--color-ink); font-weight: 600; }
+  #ask-answer {
+    white-space: pre-wrap; margin-top: 8px; font-family: var(--font-mono); font-size: 12px;
+    color: var(--color-ink-faint);
+  }
+  .badge {
+    display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 10px;
+    font-family: var(--font-mono); background: var(--color-surface); color: var(--color-ink-faint);
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>&#9632; Systema Console</h1>
+  <h1><span class="dot"></span>Systema Console</h1>
   <span id="status-line">connecting…</span>
+  <button id="theme-toggle" onclick="toggleTheme()">☀/☽</button>
 </header>
 <main>
   <div class="col">
@@ -71,7 +155,7 @@
     </div>
   </div>
   <div class="col">
-    <div class="panel" style="flex: 0 0 auto;">
+    <div class="panel fixed">
       <h2>Ask an agent</h2>
       <select id="ask-agent"></select>
       <textarea id="ask-text" rows="3" placeholder="what do you need?"></textarea>
@@ -90,6 +174,13 @@
   </div>
 </main>
 <script>
+function toggleTheme() {
+  const cur = document.documentElement.dataset.theme;
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  document.documentElement.style.colorScheme = next;
+  try { localStorage.setItem('systema-theme', next); } catch {}
+}
 async function api(path, opts) {
   const res = await fetch(path, opts);
   const body = await res.json().catch(() => ({}));
@@ -177,36 +268,9 @@ async function refreshSessions() {
     const list = await api('/api/sessions');
     const arr = Array.isArray(list) ? list : (list.sessions || []);
     document.getElementById('sessions').innerHTML = arr.map(s =>
-      `<div class="row">${esc(s.session||'')} <span class="muted">[${esc(s.state||'')}]</span></div>`
+      `<div class="row">${esc(s.session||'')} <span class="badge">${esc(s.state||'')}</span></div>`
     ).join('') || '<div class="muted">idle</div>';
   } catch (e) { document.getElementById('sessions').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
-}
-
-async function doAsk() {
-  const agent = document.getElementById('ask-agent').value;
-  const text = document.getElementById('ask-text').value;
-  const out = document.getElementById('ask-answer');
-  out.textContent = 'thinking…';
-  try {
-    const r = await api('/api/ask', { method: 'POST', headers: {'content-type':'application/json'},
-      body: JSON.stringify({ agent, text }) });
-    out.textContent = r.answer || JSON.stringify(r);
-  } catch (e) { out.textContent = 'error: ' + e.message; }
-}
-
-function startEvents() {
-  const box = document.getElementById('events');
-  const es = new EventSource('/api/events');
-  es.onmessage = (ev) => {
-    let k = ev.data, label = '';
-    try { const j = JSON.parse(ev.data); k = JSON.stringify(j); label = j.event || ''; } catch {}
-    const div = document.createElement('div');
-    div.className = 'ev';
-    div.innerHTML = `<span class="k">[${esc(label)}]</span> ${esc(k)}`;
-    box.prepend(div);
-    while (box.children.length > 300) box.removeChild(box.lastChild);
-  };
-  es.onerror = () => { es.close(); setTimeout(startEvents, 3000); };
 }
 
 async function refreshMcpServers() {
@@ -234,6 +298,33 @@ async function addMcpServer() {
 async function removeMcpServer(name) {
   await fetch('/api/mcp-servers/' + encodeURIComponent(name), { method: 'DELETE' });
   refreshMcpServers();
+}
+
+async function doAsk() {
+  const agent = document.getElementById('ask-agent').value;
+  const text = document.getElementById('ask-text').value;
+  const out = document.getElementById('ask-answer');
+  out.textContent = 'thinking…';
+  try {
+    const r = await api('/api/ask', { method: 'POST', headers: {'content-type':'application/json'},
+      body: JSON.stringify({ agent, text }) });
+    out.textContent = r.answer || JSON.stringify(r);
+  } catch (e) { out.textContent = 'error: ' + e.message; }
+}
+
+function startEvents() {
+  const box = document.getElementById('events');
+  const es = new EventSource('/api/events');
+  es.onmessage = (ev) => {
+    let k = ev.data, label = '';
+    try { const j = JSON.parse(ev.data); k = JSON.stringify(j); label = j.event || ''; } catch {}
+    const div = document.createElement('div');
+    div.className = 'ev';
+    div.innerHTML = `<span class="k">[${esc(label)}]</span> ${esc(k)}`;
+    box.prepend(div);
+    while (box.children.length > 300) box.removeChild(box.lastChild);
+  };
+  es.onerror = () => { es.close(); setTimeout(startEvents, 3000); };
 }
 
 function refreshAll() {
