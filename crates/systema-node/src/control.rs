@@ -56,6 +56,10 @@ pub enum Control {
     Agents,
     /// Node vitals for status panels: peer id, addresses, counts.
     Status,
+    /// Fire every enabled job whose `on_http` names this webhook (see `schedule::http_jobs`).
+    /// Returns `{ "fired": [...], "skipped": [...] }` (skipped: already running, or unknown
+    /// agent). A no-op, not an error, when no job names this webhook.
+    FireWebhook { name: String },
     /// Stream kernel events as JSON lines until the client disconnects.
     Watch,
 }

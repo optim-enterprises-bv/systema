@@ -57,6 +57,7 @@ What it serves:
   to the matching `Control` variant.
 - `POST /api/{ask,steer,cancel,resolve,approve,reject,block,send,find,forget}` -- the write-side
   `Control` variants, as JSON bodies.
+- `POST /api/webhook/<name>` -- fires the `on_http = "<name>"` scheduled job(s) (Phase 2, below).
 - `GET /api/events` -- Server-Sent-Events, bridging the control socket's `Control::Watch` line
   stream (the same feed the TUI renders) straight to the browser. This is the trace-explorer
   analogue of iii's console, built on Systema's own event bus (`events.rs`), not iii's.
@@ -69,19 +70,30 @@ systema-console --home ~/.systema --port 8787
 # open http://127.0.0.1:8787
 ```
 
-## Phase 2 -- generalize triggers (not yet done)
+## Phase 2 -- generalize triggers
 
-Extend `schedule.rs`'s `Trigger` enum with two more variants, matching iii's shape:
+**Shipped in this change:**
 
-- `Trigger::Http(String)` -- `on_http = "<name>"` in `schedules.toml`, fired by a
-  `POST /webhook/<name>` added to `systema-console` (or a dedicated `systema-http` crate if the
-  console and the webhook listener need to scale independently later). This is the "HTTP A2A
-  gateway" line item on the roadmap.
-- `Trigger::At(time::Time)` -- daily clock-time (`at = "09:00"`), the other named-but-unshipped
-  roadmap item, checked on the same tick loop as `every`.
+- `Trigger::At(u8, u8)` -- `at = "09:00"` in `schedules.toml`: a daily wall-clock-time (UTC) fire,
+  checked on the same tick loop as `every`, with the same "arm on first sight, don't fire" rule.
+  Cursor is the epoch-ms of the scheduled instant last fired for, so a restart mid-day neither
+  double-fires nor skips the next day. Covered by `daily_at_fires_once_then_again_next_day` and
+  `daily_at_armed_after_its_time_does_not_fire_same_day` in `schedule.rs`.
+- `Trigger::Http(String)` -- `on_http = "<name>"`: fired on demand, not polled. `systema-console`
+  exposes `POST /api/webhook/<name>`, which calls a new `Control::FireWebhook { name }` on the
+  node's control socket; the node runs `schedule::http_jobs(home, name)` and fires each matching
+  enabled job exactly like a due scheduled job (same `spawn_operator_turn`, same "skip if already
+  running / unknown agent" guards). This is the roadmap's "HTTP A2A gateway" line item, scoped to
+  triggering -- a general inbound-request gateway is still open (see Phase 2 remaining, below).
+
+**Remaining:**
+
 - `Trigger::Inbound(Option<String>)` -- fire on an inbound swarm A2A request (optionally scoped to
-  a skill), reusing the same "arm on first sight, fire on next change" cursor model already used
-  for `OnChange`/`OnBoard`.
+  a skill), reusing the same "arm on first sight, fire on next change" cursor model as
+  `OnChange`/`OnBoard`. Needs a cursor source inside the node's A2A request handler (a
+  last-inbound-timestamp per skill, mirroring `board::latest_ts`) before `schedule::check` can
+  observe it -- deferred because it touches the inbound A2A path directly, where mistakes are
+  costlier than in the self-contained `schedule.rs` module the two shipped triggers above live in.
 
 None of this touches the capability broker: a triggered turn still goes through the exact same
 `check_capability` / Rule-of-Two path as an operator-typed prompt.

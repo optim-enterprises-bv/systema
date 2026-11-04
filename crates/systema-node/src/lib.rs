@@ -942,6 +942,27 @@ impl Node {
                     "pending_approvals": self.pending_approvals.lock().unwrap().len(),
                 }))
             }
+            Control::FireWebhook { name } => {
+                let mut fired = Vec::new();
+                let mut skipped = Vec::new();
+                for job in systema_kernel::schedule::http_jobs(&self.home, &name) {
+                    let session = format!("sched:{}", job.name);
+                    if self.running.contains_key(&session) {
+                        debug!(job = %job.name, "webhook-triggered job still running; skipping this fire");
+                        skipped.push(job.name);
+                        continue;
+                    }
+                    if self.kernel.agent(&job.agent).is_none() {
+                        warn!(job = %job.name, agent = %job.agent, "webhook-triggered job names an unknown agent");
+                        skipped.push(job.name);
+                        continue;
+                    }
+                    info!(job = %job.name, agent = %job.agent, webhook = %name, "firing webhook-triggered job");
+                    self.spawn_operator_turn(job.agent.clone(), session, job.prompt.clone());
+                    fired.push(job.name);
+                }
+                Ok(json!({ "fired": fired, "skipped": skipped }))
+            }
             // Streamed by the socket handler, never dispatched here.
             Control::Watch => Err("watch is a streaming command".into()),
         };

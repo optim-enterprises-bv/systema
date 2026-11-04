@@ -8,6 +8,12 @@
       Server-Sent-Events trace feed in a browser, alongside the TUI. No new security surface: every
       request is forwarded verbatim through the same trust gate and broker. See
       [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 1.
+- [x] **More triggers: daily clock-time and an HTTP webhook.** `at = "HH:MM"` (UTC) and
+      `on_http = "<name>"` join `every`/`on_change`/`on_board` in `schedules.toml`; the webhook kind
+      fires on demand via `POST /api/webhook/<name>` on `systema-console`, never polled. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 2. *Remaining: an inbound-swarm-message
+      trigger.*
+
 
 Where Systema stands against other agentic systems (Claude Code / Agent SDK, Hermes, OpenAI
 Codex/Swarm, LangGraph, CrewAI, Google ADK + Agent Engine, Letta/MemGPT, the A2A/MCP ecosystem),

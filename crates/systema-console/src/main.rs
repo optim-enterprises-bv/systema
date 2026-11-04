@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/send", post(send))
         .route("/api/find", post(find))
         .route("/api/forget", post(forget))
+        .route("/api/webhook/{name}", post(webhook))
         .route("/api/events", get(events))
         .with_state(state);
 
@@ -242,6 +243,12 @@ struct ForgetReq {
 }
 async fn forget(State(state): State<AppState>, Json(req): Json<ForgetReq>) -> Result<Json<Value>, (StatusCode, String)> {
     call(state, Control::Forget { agent: req.agent, key: req.key }).await
+}
+
+/// Fire a named webhook trigger -- `POST /api/webhook/<name>` -- for any `on_http = "<name>"`
+/// job in `schedules.toml`. The path segment is the whole request; no body is required.
+async fn webhook(State(state): State<AppState>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::FireWebhook { name }).await
 }
 
 /// Live trace: bridges the control socket's `Watch` line stream to the browser as
