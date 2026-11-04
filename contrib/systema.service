@@ -10,7 +10,14 @@
 #   systemctl --user enable --now systema.service
 #   loginctl enable-linger "$USER"   # optional: keep running while logged out
 #
-# Then: systema tui
+# This one unit runs both the node and the browser console (systema-console) on
+# http://127.0.0.1:8787 — the console forwards every request through the node's
+# own control socket, so it has no state or trust model of its own; see
+# docs/IIi-FUSION.md Phase 1. Stopping/restarting the unit takes both down
+# together (the console is backgrounded, then the shell execs into the node, so
+# both end up in the same cgroup systemd supervises as one service).
+#
+# Then: systema tui   (or open http://127.0.0.1:8787)
 #
 # Logs:   journalctl --user -u systema -f
 # Stop:   systemctl --user stop systema
@@ -27,10 +34,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/systema node
+ExecStart=/bin/sh -c 'exec /usr/local/bin/systema-console --home "$SYSTEMA_HOME" --port 8787 & exec /usr/local/bin/systema node'
 Restart=on-failure
 RestartSec=3
-# Where the node keeps its state (%h = your home).
+# Where the node (and the console, via the same env) keeps its state (%h = your home).
 Environment=SYSTEMA_HOME=%h/.systema
 
 [Install]
