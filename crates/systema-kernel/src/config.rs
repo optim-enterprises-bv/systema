@@ -102,6 +102,33 @@ pub struct InferenceConfig {
     /// Model id to request from `cloud_endpoint` (falls back to the tier's local model id).
     #[serde(default)]
     pub cloud_model: Option<String>,
+    /// Additional named OpenAI-compatible providers, beyond `endpoint`/`cloud_endpoint` above.
+    /// Operator-managed: added/removed at runtime via `Control::ProviderAdd`/`ProviderRemove`
+    /// (systema-console's Providers panel), the same hot-pluggable pattern as `[mcp.*]` servers
+    /// (docs/IIi-FUSION.md Phase 4). Not yet wired into per-turn model selection -- see Phase 5.
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, ProviderConfig>,
+}
+
+/// `[inference.providers.<name>]` in systema.toml, or added at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// OpenAI-compatible base URL.
+    pub endpoint: String,
+    /// Env var holding this provider's bearer token; unset = no auth (e.g. a local engine).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Model ids this provider serves (informational -- for listings and `chat`'s `model`
+    /// argument; not validated against the provider at add time).
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self { endpoint: String::new(), api_key_env: None, models: Vec::new() }
+    }
 }
 
 fn default_embed_model() -> String {
@@ -192,6 +219,7 @@ impl Default for InferenceConfig {
             embed_model: default_embed_model(),
             cloud_endpoint: None,
             cloud_model: None,
+            providers: Default::default(),
         }
     }
 }

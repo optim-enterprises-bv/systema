@@ -275,6 +275,16 @@ impl Broker {
         self.systema_home.join("workspaces").join(agent)
     }
 
+    /// A path inside an agent's workspace, confined the same way the agent's own tools are.
+    /// Operator-level (the console's file browser, `Control::Workspace*`), not an agent tool
+    /// call -- those still go through `check`. Lexically normalized; `None` if `rel` would
+    /// resolve outside the workspace (`..`, an absolute path).
+    pub fn workspace_subpath(&self, agent: &str, rel: &str) -> Option<PathBuf> {
+        let ws = canonical_prefix(&self.workspace(agent));
+        let joined = normalize(&ws.join(rel.trim_start_matches('/')));
+        joined.starts_with(&ws).then_some(joined)
+    }
+
     /// `~` → user home; relative → the agent's workspace; then lexically normalized.
     pub fn expand(&self, agent: &str, p: &str) -> PathBuf {
         let raw = if p == "~" {

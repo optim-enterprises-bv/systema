@@ -6,7 +6,10 @@ use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::InferenceConfig;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+
+use crate::config::{InferenceConfig, ProviderConfig};
 use crate::manifest::ModelTier;
 use crate::session::ChatMessage;
 
@@ -14,6 +17,11 @@ use crate::session::ChatMessage;
 pub struct InferenceClient {
     http: reqwest::Client,
     cfg: InferenceConfig,
+    /// Named providers beyond `cfg.endpoint`/`cfg.cloud_endpoint`, seeded from
+    /// `[inference.providers.*]` and runtime-addable (Phase 5 of docs/IIi-FUSION.md -- the same
+    /// hot-pluggable, operator-only pattern as `[mcp.*]` servers in Phase 4). `Arc` so the client
+    /// stays `Clone`.
+    providers: Arc<RwLock<BTreeMap<String, ProviderConfig>>>,
 }
 
 #[derive(Deserialize)]
@@ -41,7 +49,38 @@ struct EmbeddingDatum {
 impl InferenceClient {
     pub fn new(cfg: InferenceConfig) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(cfg.timeout_secs)).build()?;
-        Ok(Self { http, cfg })
+        let providers = Arc::new(RwLock::new(cfg.providers.clone()));
+        Ok(Self { http, cfg, providers })
+    }
+
+    /// The configured providers, startup plus runtime-added (not the default `endpoint`, which
+    /// has no name of its own).
+    pub fn list_providers(&self) -> Vec<(String, ProviderConfig)> {
+        self.providers.read().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Add or replace a named provider at runtime.
+    pub fn add_provider(&self, name: String, cfg: ProviderConfig) {
+        self.providers.write().unwrap().insert(name, cfg);
+    }
+
+    /// Remove a provider. Returns whether one existed.
+    pub fn remove_provider(&self, name: &str) -> bool {
+        self.providers.write().unwrap().remove(name).is_some()
+    }
+
+    /// Cheap reachability check against a named provider (or the default endpoint if `name` is
+    /// `None`), mirroring `health()`.
+    pub async fn provider_health(&self, name: Option<&str>) -> anyhow::Result<()> {
+        let endpoint = match name {
+            None => self.cfg.endpoint.clone(),
+            Some(n) => {
+                self.providers.read().unwrap().get(n).map(|p| p.endpoint.clone()).with_context(|| format!("no provider named {n}"))?
+            }
+        };
+        let url = format!("{}/models", endpoint.trim_end_matches('/'));
+        self.http.get(url).timeout(Duration::from_secs(3)).send().await?.error_for_status()?;
+        Ok(())
     }
 
     pub fn model_for(&self, tier: ModelTier) -> &str {
@@ -119,6 +158,21 @@ impl InferenceClient {
     /// Plain text completion with no tools.
     pub async fn chat(&self, tier: ModelTier, messages: &[ChatMessage]) -> anyhow::Result<String> {
         self.complete(tier, messages, &[]).await?.content.context("empty completion")
+    }
+
+    /// Plain text completion against an explicit named provider and model, bypassing tier
+    /// routing entirely. `provider: None` uses the default `endpoint` (no auth). For a future
+    /// per-message provider/model picker in the chat UI, and for `Control::ProviderTest`.
+    pub async fn chat_with(&self, provider: Option<&str>, model: &str, messages: &[ChatMessage]) -> anyhow::Result<String> {
+        let (endpoint, api_key) = match provider {
+            None => (self.cfg.endpoint.clone(), None),
+            Some(n) => {
+                let p = self.providers.read().unwrap().get(n).cloned().with_context(|| format!("no provider named {n}"))?;
+                let key = p.api_key_env.as_deref().and_then(|v| std::env::var(v).ok());
+                (p.endpoint, key)
+            }
+        };
+        self.complete_at(&endpoint, model, api_key.as_deref(), messages, &[]).await?.content.context("empty completion")
     }
 
     /// Whether an embeddings endpoint is configured.

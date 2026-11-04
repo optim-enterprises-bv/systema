@@ -22,7 +22,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::Html;
@@ -106,6 +106,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/webhook/{name}", post(webhook))
         .route("/api/mcp-servers", get(mcp_servers).post(mcp_add))
         .route("/api/mcp-servers/{name}", axum::routing::delete(mcp_remove))
+        .route("/api/providers", get(providers).post(provider_add))
+        .route("/api/providers/{name}", axum::routing::delete(provider_remove))
+        .route("/api/providers/test", post(provider_test_default))
+        .route("/api/providers/{name}/test", post(provider_test))
+        .route("/api/history", get(history))
+        .route("/api/history/{id}", get(replay))
+        .route("/api/workspace/{agent}", get(workspace_list))
+        .route("/api/workspace/{agent}/file", get(workspace_read).post(workspace_write))
         .route("/api/events", get(events))
         .with_state(state);
 
@@ -271,6 +279,88 @@ async fn mcp_add(State(state): State<AppState>, Json(req): Json<McpAddReq>) -> R
 
 async fn mcp_remove(State(state): State<AppState>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
     call(state, Control::McpRemove { name }).await
+}
+
+// --- Phase 5: provider/model management --------------------------------------------------
+
+async fn providers(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::Providers).await
+}
+
+#[derive(Deserialize)]
+struct ProviderAddReq {
+    name: String,
+    config: systema_kernel::config::ProviderConfig,
+}
+async fn provider_add(State(state): State<AppState>, Json(req): Json<ProviderAddReq>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::ProviderAdd { name: req.name, config: req.config }).await
+}
+
+async fn provider_remove(State(state): State<AppState>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::ProviderRemove { name }).await
+}
+
+async fn provider_test(State(state): State<AppState>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::ProviderTest { name: Some(name) }).await
+}
+
+async fn provider_test_default(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::ProviderTest { name: None }).await
+}
+
+// --- Phase 6: chat history / transcript ---------------------------------------------------
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    agent: Option<String>,
+    #[serde(default = "default_history_limit")]
+    limit: usize,
+}
+fn default_history_limit() -> usize {
+    50
+}
+async fn history(State(state): State<AppState>, Query(q): Query<HistoryQuery>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::History { agent: q.agent, limit: q.limit }).await
+}
+
+async fn replay(State(state): State<AppState>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::Replay { id }).await
+}
+
+// --- Phase 7: workspace / project file browser --------------------------------------------
+
+#[derive(Deserialize)]
+struct PathQuery {
+    #[serde(default)]
+    path: String,
+}
+async fn workspace_list(
+    State(state): State<AppState>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+    Query(q): Query<PathQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::WorkspaceList { agent, path: q.path }).await
+}
+
+async fn workspace_read(
+    State(state): State<AppState>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+    Query(q): Query<PathQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::WorkspaceRead { agent, path: q.path }).await
+}
+
+#[derive(Deserialize)]
+struct WorkspaceWriteReq {
+    path: String,
+    content_base64: String,
+}
+async fn workspace_write(
+    State(state): State<AppState>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+    Json(req): Json<WorkspaceWriteReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    call(state, Control::WorkspaceWrite { agent, path: req.path, content_base64: req.content_base64 }).await
 }
 
 /// Live trace: bridges the control socket's `Watch` line stream to the browser as
