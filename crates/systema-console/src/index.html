@@ -79,9 +79,7 @@
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 10px 16px; background: var(--color-panel); border-bottom: 1px solid var(--color-edge);
   }
-  header h1 {
-    font-size: 14px; margin: 0; font-weight: 600; display: flex; align-items: center; gap: 8px;
-  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   header h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-ok); display: inline-block; }
   #status-line { color: var(--color-ink-faint); font-family: var(--font-mono); font-size: 12px; }
   #theme-toggle {
@@ -89,8 +87,8 @@
     border-radius: var(--radius-sm); padding: 5px 10px; font-size: 12px; cursor: pointer;
   }
   main {
-    display: grid; grid-template-columns: 280px 1fr 320px; gap: 12px;
-    padding: 12px; height: calc(100vh - 49px); max-width: 1600px; margin: 0 auto;
+    display: grid; grid-template-columns: 300px 1fr 320px; gap: 12px;
+    padding: 12px; height: calc(100vh - 49px); max-width: 1800px; margin: 0 auto;
   }
   .col { display: flex; flex-direction: column; gap: 12px; overflow: hidden; min-width: 0; }
   .panel {
@@ -100,12 +98,17 @@
   .panel.fixed { flex: 0 0 auto; }
   .panel h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
-    color: var(--color-ink-faint); margin: 0 0 10px;
+    color: var(--color-ink-faint); margin: 0 0 10px; display: flex; align-items: center; justify-content: space-between;
   }
-  .row {
-    padding: 8px 10px; margin: 0 -2px 4px; border-radius: var(--radius-sm);
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    background: transparent; color: var(--color-ink-faint); border: none; padding: 3px 8px;
+    border-radius: var(--radius-sm); font-size: 11px; cursor: pointer; text-transform: none; letter-spacing: 0;
   }
+  .tab.active { background: var(--color-surface); color: var(--color-ink); }
+  .row { padding: 8px 10px; margin: 0 -2px 4px; border-radius: var(--radius-sm); cursor: default; }
   .row:hover { background: var(--color-surface-hover); }
+  .row.clickable { cursor: pointer; }
   .row b { font-weight: 600; }
   .muted { color: var(--color-ink-ghost); }
   button {
@@ -116,13 +119,16 @@
   button:hover { opacity: .85; }
   button.deny { background: var(--color-alert-muted); color: var(--color-alert); }
   button.ghost { background: transparent; color: var(--color-ink); border: 1px solid var(--color-edge); }
+  button.small { padding: 3px 8px; font-size: 11px; }
   textarea, input, select {
     width: 100%; background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-edge);
     border-radius: var(--radius-sm); padding: 7px 9px; font-family: var(--font-sans); font-size: 12px;
     margin-bottom: 6px;
   }
   textarea:focus, input:focus, select:focus { outline: 2px solid var(--color-ink-ghost); outline-offset: -1px; }
-  #events { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  #events, #transcript, #workspace-preview {
+    font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  }
   .ev { padding: 6px 0; border-bottom: 1px solid var(--color-edge); }
   .ev .k { color: var(--color-ink); font-weight: 600; }
   #ask-answer {
@@ -133,6 +139,12 @@
     display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 10px;
     font-family: var(--font-mono); background: var(--color-surface); color: var(--color-ink-faint);
   }
+  .badge.ok { background: var(--color-ok-muted); color: var(--color-ok); }
+  .badge.err { background: var(--color-alert-muted); color: var(--color-alert); }
+  .step { padding: 6px 8px; margin: 4px 0; background: var(--color-surface); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11px; }
+  .crumb { color: var(--color-ink-faint); cursor: pointer; }
+  .crumb:hover { text-decoration: underline; }
+  hr.sep { border: none; border-top: 1px solid var(--color-edge); margin: 10px 0; }
 </style>
 </head>
 <body>
@@ -145,6 +157,17 @@
   <div class="col">
     <div class="panel" id="agents-panel"><h2>Agents</h2><div id="agents"></div></div>
     <div class="panel" id="peers-panel"><h2>Swarm peers</h2><div id="peers"></div></div>
+    <div class="panel">
+      <h2>Providers</h2>
+      <div id="providers"></div>
+      <button class="ghost small" onclick="testProvider(null)">Test default endpoint</button>
+      <hr class="sep">
+      <input id="prov-name" placeholder="name">
+      <input id="prov-endpoint" placeholder="endpoint, e.g. https://api.openai.com/v1">
+      <input id="prov-key-env" placeholder="api key env var (optional)">
+      <input id="prov-models" placeholder="models, comma-separated">
+      <button class="ghost" onclick="addProvider()">Add / replace</button>
+    </div>
     <div class="panel" id="mcp-panel">
       <h2>MCP servers (runtime)</h2>
       <div id="mcp-servers"></div>
@@ -156,21 +179,41 @@
   </div>
   <div class="col">
     <div class="panel fixed">
-      <h2>Ask an agent</h2>
+      <h2>Chat</h2>
       <select id="ask-agent"></select>
       <textarea id="ask-text" rows="3" placeholder="what do you need?"></textarea>
       <button onclick="doAsk()">Send</button>
       <div id="ask-answer"></div>
     </div>
     <div class="panel">
-      <h2>Live trace</h2>
+      <h2>
+        <span id="feed-title">Live trace</span>
+        <span class="tabs">
+          <button class="tab active" id="tab-live" onclick="showLive()">Live</button>
+          <button class="tab" id="tab-history" onclick="showHistory()">History</button>
+        </span>
+      </h2>
       <div id="events"></div>
+      <div id="history-view" style="display:none">
+        <select id="history-agent" onchange="refreshHistory()"><option value="">All agents</option></select>
+        <div id="history-list"></div>
+        <div id="transcript"></div>
+      </div>
     </div>
   </div>
   <div class="col">
     <div class="panel"><h2>Approvals</h2><div id="approvals"></div></div>
     <div class="panel"><h2>Inbox (unknown peers)</h2><div id="inbox"></div></div>
     <div class="panel"><h2>Sessions</h2><div id="sessions"></div></div>
+    <div class="panel">
+      <h2>Workspace</h2>
+      <select id="workspace-agent" onchange="loadWorkspace(this.value, '')"></select>
+      <div id="workspace-breadcrumb" class="muted" style="margin-bottom:6px"></div>
+      <div id="workspace-list"></div>
+      <div id="workspace-preview"></div>
+      <input type="file" id="workspace-upload" style="margin-top:6px">
+      <button class="ghost small" onclick="uploadToWorkspace()">Upload here</button>
+    </div>
   </div>
 </main>
 <script>
@@ -197,15 +240,28 @@ async function refreshStatus() {
   } catch (e) { document.getElementById('status-line').textContent = 'node unreachable: ' + e.message; }
 }
 
+let knownAgents = [];
 async function refreshAgents() {
   try {
     const list = await api('/api/agents');
     const arr = Array.isArray(list) ? list : (list.agents || []);
+    knownAgents = arr.map(a => a.name || a);
     document.getElementById('agents').innerHTML = arr.map(a =>
       `<div class="row"><b>${esc(a.name||a)}</b><br><span class="muted">${esc(a.description||'')}</span></div>`
     ).join('') || '<div class="muted">no agents loaded</div>';
     const sel = document.getElementById('ask-agent');
-    sel.innerHTML = arr.map(a => `<option value="${esc(a.name||a)}">${esc(a.name||a)}</option>`).join('');
+    const prevAsk = sel.value;
+    sel.innerHTML = knownAgents.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    if (knownAgents.includes(prevAsk)) sel.value = prevAsk;
+    const hsel = document.getElementById('history-agent');
+    const prevH = hsel.value;
+    hsel.innerHTML = '<option value="">All agents</option>' + knownAgents.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    hsel.value = prevH;
+    const wsel = document.getElementById('workspace-agent');
+    const prevW = wsel.value;
+    wsel.innerHTML = knownAgents.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    if (knownAgents.includes(prevW)) wsel.value = prevW;
+    else if (knownAgents.length && !wsAgent) loadWorkspace(knownAgents[0], '');
   } catch (e) { document.getElementById('agents').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
 }
 
@@ -300,6 +356,44 @@ async function removeMcpServer(name) {
   refreshMcpServers();
 }
 
+// --- Providers (Phase 5) ---
+async function refreshProviders() {
+  try {
+    const list = await api('/api/providers');
+    const arr = Array.isArray(list) ? list : (list.providers || []);
+    document.getElementById('providers').innerHTML = arr.map(p => `
+      <div class="row">
+        <b>${esc(p.name)}</b> <span class="muted">${esc(p.endpoint)}</span><br>
+        <span class="muted">${esc((p.models||[]).join(', ')) || 'no models listed'}</span>
+        ${p.has_api_key_env ? '<span class="badge">keyed</span>' : ''}
+        <button class="small ghost" onclick="testProvider('${esc(p.name)}')">Test</button>
+        <button class="small deny" onclick="removeProvider('${esc(p.name)}')">Remove</button>
+      </div>`
+    ).join('') || '<div class="muted">none added (default endpoint is always available)</div>';
+  } catch (e) { document.getElementById('providers').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+async function addProvider() {
+  const name = document.getElementById('prov-name').value.trim();
+  const endpoint = document.getElementById('prov-endpoint').value.trim();
+  const api_key_env = document.getElementById('prov-key-env').value.trim() || null;
+  const models = document.getElementById('prov-models').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!name || !endpoint) return;
+  await api('/api/providers', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ name, config: { endpoint, api_key_env, models } }) });
+  refreshProviders();
+}
+async function removeProvider(name) {
+  await fetch('/api/providers/' + encodeURIComponent(name), { method: 'DELETE' });
+  refreshProviders();
+}
+async function testProvider(name) {
+  try {
+    await api(name ? `/api/providers/${encodeURIComponent(name)}/test` : '/api/providers/test', { method: 'POST' });
+    alert((name || 'default endpoint') + ': reachable');
+  } catch (e) { alert((name || 'default endpoint') + ': ' + e.message); }
+}
+
+// --- Chat (Ask) ---
 async function doAsk() {
   const agent = document.getElementById('ask-agent').value;
   const text = document.getElementById('ask-text').value;
@@ -309,7 +403,100 @@ async function doAsk() {
     const r = await api('/api/ask', { method: 'POST', headers: {'content-type':'application/json'},
       body: JSON.stringify({ agent, text }) });
     out.textContent = r.answer || JSON.stringify(r);
+    if (document.getElementById('tab-history').classList.contains('active')) refreshHistory();
   } catch (e) { out.textContent = 'error: ' + e.message; }
+}
+
+// --- Live trace / History tabs (Phase 6) ---
+function showLive() {
+  document.getElementById('tab-live').classList.add('active');
+  document.getElementById('tab-history').classList.remove('active');
+  document.getElementById('feed-title').textContent = 'Live trace';
+  document.getElementById('events').style.display = '';
+  document.getElementById('history-view').style.display = 'none';
+}
+function showHistory() {
+  document.getElementById('tab-live').classList.remove('active');
+  document.getElementById('tab-history').classList.add('active');
+  document.getElementById('feed-title').textContent = 'Chat history';
+  document.getElementById('events').style.display = 'none';
+  document.getElementById('history-view').style.display = '';
+  refreshHistory();
+}
+async function refreshHistory() {
+  const agent = document.getElementById('history-agent').value;
+  document.getElementById('transcript').innerHTML = '';
+  try {
+    const runs = await api('/api/history' + (agent ? `?agent=${encodeURIComponent(agent)}&limit=50` : '?limit=50'));
+    const arr = Array.isArray(runs) ? runs : (runs.runs || []);
+    document.getElementById('history-list').innerHTML = arr.map(r => `
+      <div class="row clickable" onclick="loadTranscript('${esc(r.id)}')">
+        <span class="badge ${r.ok ? 'ok' : 'err'}">${r.ok ? 'ok' : 'err'}</span>
+        <b>${esc(r.agent)}</b> <span class="muted">${esc((r.prompt||'').slice(0,60))}</span>
+      </div>`
+    ).join('') || '<div class="muted">no runs recorded yet</div>';
+  } catch (e) { document.getElementById('history-list').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+async function loadTranscript(id) {
+  const box = document.getElementById('transcript');
+  box.textContent = 'loading…';
+  try {
+    const r = await api('/api/history/' + encodeURIComponent(id));
+    const steps = (r.steps||[]).map(s => `<div class="step">${esc(s.tool)} → ${esc(s.outcome)}</div>`).join('');
+    box.innerHTML = `<div class="row"><b>${esc(r.agent)}</b> <span class="badge ${r.ok?'ok':'err'}">${r.ok?'ok':'error'}</span> <span class="muted">${r.ms}ms</span></div>
+      <div class="row">&gt; ${esc(r.prompt)}</div>${steps}<div class="row">${esc(r.answer)}</div>`;
+  } catch (e) { box.textContent = 'error: ' + e.message; }
+}
+
+// --- Workspace browser (Phase 7) ---
+let wsAgent = '', wsPath = '';
+function crumbs(path) {
+  const parts = path.split('/').filter(Boolean);
+  let acc = '';
+  const links = ['<span class="crumb" onclick="loadWorkspace(wsAgent,\'\')">/</span>'];
+  for (const p of parts) {
+    acc += (acc ? '/' : '') + p;
+    links.push(`<span class="crumb" onclick="loadWorkspace(wsAgent,'${esc(acc)}')">${esc(p)}</span>`);
+  }
+  return links.join(' / ');
+}
+async function loadWorkspace(agent, path) {
+  if (!agent) return;
+  wsAgent = agent; wsPath = path || '';
+  document.getElementById('workspace-agent').value = agent;
+  document.getElementById('workspace-breadcrumb').innerHTML = crumbs(wsPath);
+  document.getElementById('workspace-preview').textContent = '';
+  try {
+    const r = await api(`/api/workspace/${encodeURIComponent(agent)}?path=${encodeURIComponent(wsPath)}`);
+    const entries = (r.entries||[]).slice().sort((a,b) => (b.is_dir-a.is_dir) || a.name.localeCompare(b.name));
+    document.getElementById('workspace-list').innerHTML = entries.map(e => `
+      <div class="row clickable" onclick="${e.is_dir
+        ? `loadWorkspace(wsAgent, '${esc((wsPath?wsPath+'/':'')+e.name)}')`
+        : `previewFile('${esc((wsPath?wsPath+'/':'')+e.name)}')`}">
+        ${e.is_dir ? '📁' : '📄'} ${esc(e.name)} ${e.is_dir ? '' : `<span class="muted">${e.size}b</span>`}
+      </div>`
+    ).join('') || '<div class="muted">empty</div>';
+  } catch (e) { document.getElementById('workspace-list').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+async function previewFile(path) {
+  const box = document.getElementById('workspace-preview');
+  box.textContent = 'loading…';
+  try {
+    const r = await api(`/api/workspace/${encodeURIComponent(wsAgent)}/file?path=${encodeURIComponent(path)}`);
+    box.textContent = r.content + (r.truncated ? '\n[truncated]' : '');
+  } catch (e) { box.textContent = 'error: ' + e.message; }
+}
+async function uploadToWorkspace() {
+  const input = document.getElementById('workspace-upload');
+  const file = input.files[0];
+  if (!file || !wsAgent) return;
+  const buf = await file.arrayBuffer();
+  const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''));
+  const path = (wsPath ? wsPath + '/' : '') + file.name;
+  await api(`/api/workspace/${encodeURIComponent(wsAgent)}/file`, { method: 'POST',
+    headers: {'content-type':'application/json'}, body: JSON.stringify({ path, content_base64: b64 }) });
+  input.value = '';
+  loadWorkspace(wsAgent, wsPath);
 }
 
 function startEvents() {
@@ -328,7 +515,8 @@ function startEvents() {
 }
 
 function refreshAll() {
-  refreshStatus(); refreshAgents(); refreshPeers(); refreshApprovals(); refreshInbox(); refreshSessions(); refreshMcpServers();
+  refreshStatus(); refreshAgents(); refreshPeers(); refreshApprovals(); refreshInbox(); refreshSessions();
+  refreshMcpServers(); refreshProviders();
 }
 refreshAll();
 setInterval(refreshAll, 4000);

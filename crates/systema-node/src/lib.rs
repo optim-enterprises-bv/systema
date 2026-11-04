@@ -925,6 +925,62 @@ impl Node {
                     "skills": m.skills.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>()
             )),
+            Control::WorkspaceList { agent, path } => match self.kernel.broker.workspace_subpath(&agent, &path) {
+                None => Err("path escapes the workspace".into()),
+                Some(dir) => match std::fs::read_dir(&dir) {
+                    Ok(entries) => {
+                        let mut items: Vec<serde_json::Value> = entries
+                            .flatten()
+                            .map(|e| {
+                                let meta = e.metadata().ok();
+                                json!({
+                                    "name": e.file_name().to_string_lossy(),
+                                    "is_dir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                                    "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                                })
+                            })
+                            .collect();
+                        items.sort_by(|a, b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
+                        Ok(json!({ "path": path, "entries": items }))
+                    }
+                    Err(e) => Err(format!("{}: {e}", dir.display())),
+                },
+            },
+            Control::WorkspaceRead { agent, path } => match self.kernel.broker.workspace_subpath(&agent, &path) {
+                None => Err("path escapes the workspace".into()),
+                Some(file) => match std::fs::read(&file) {
+                    Ok(bytes) => {
+                        const CAP: usize = 256 * 1024;
+                        let truncated = bytes.len() > CAP;
+                        let text = String::from_utf8_lossy(&bytes[..bytes.len().min(CAP)]).into_owned();
+                        Ok(json!({ "content": text, "truncated": truncated, "size": bytes.len() }))
+                    }
+                    Err(e) => Err(format!("{}: {e}", file.display())),
+                },
+            },
+            Control::WorkspaceWrite { agent, path, content_base64 } => match self.kernel.broker.workspace_subpath(&agent, &path) {
+                None => Err("path escapes the workspace".into()),
+                Some(file) => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(&content_base64) {
+                        Ok(bytes) => {
+                            if let Some(parent) = file.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            match std::fs::write(&file, &bytes) {
+                                Ok(()) => Ok(json!({ "wrote": path, "bytes": bytes.len() })),
+                                Err(e) => Err(format!("{}: {e}", file.display())),
+                            }
+                        }
+                        Err(e) => Err(format!("bad base64: {e}")),
+                    }
+                }
+            },
+            Control::History { agent, limit } => Ok(json!(systema_kernel::runs::list(&self.home, agent.as_deref(), limit.clamp(1, 500)))),
+            Control::Replay { id } => match systema_kernel::runs::get(&self.home, &id) {
+                Some(run) => Ok(json!(run)),
+                None => Err(format!("no run matching id {id}")),
+            },
             Control::Status => {
                 let addrs = self.listen_addrs();
                 let reservations = self.relays.iter().filter(|r| r.listener.is_some()).count();
@@ -941,6 +997,41 @@ impl Node {
                     "relay_reservations": reservations,
                     "pending_approvals": self.pending_approvals.lock().unwrap().len(),
                 }))
+            }
+            Control::Providers => Ok(json!(
+                self.kernel
+                    .inference
+                    .list_providers()
+                    .into_iter()
+                    .map(|(name, cfg)| json!({
+                        "name": name,
+                        "endpoint": cfg.endpoint,
+                        "models": cfg.models,
+                        "has_api_key_env": cfg.api_key_env.is_some(),
+                    }))
+                    .collect::<Vec<_>>()
+            )),
+            Control::ProviderAdd { name, config } => {
+                info!(provider = %name, "adding/replacing inference provider at runtime");
+                self.kernel.inference.add_provider(name.clone(), config);
+                Ok(json!({ "added": name }))
+            }
+            Control::ProviderRemove { name } => {
+                let existed = self.kernel.inference.remove_provider(&name);
+                Ok(json!({ "removed": name, "existed": existed }))
+            }
+            Control::ProviderTest { name } => {
+                let kernel = self.kernel.clone();
+                tokio::spawn(async move {
+                    let r = kernel
+                        .inference
+                        .provider_health(name.as_deref())
+                        .await
+                        .map(|()| json!({ "ok": true }))
+                        .map_err(|e| e.to_string());
+                    let _ = reply.send(r);
+                });
+                return;
             }
             Control::McpServers => Ok(json!(
                 self.kernel

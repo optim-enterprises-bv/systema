@@ -151,6 +151,64 @@ A real `capabilities.workers` + bespoke-protocol extension point, if ever needed
 MCP can't express, remains future work -- but should only be built once a concrete need outgrows
 what the hot-pluggable MCP roster above already covers.
 
+## Phase 5 -- provider/model management
+
+iii runs `llm-router` plus separate provider processes (`provider-openai`, `provider-claude-code`,
+`provider-llamacpp`, ...) so you can add a model provider without touching code. Systema's
+`InferenceConfig` was one hardcoded endpoint + a fast/deep tier pair + one optional cloud
+fallback -- no "add a provider" concept at all.
+
+Shipped: `InferenceConfig` gained `providers: BTreeMap<String, ProviderConfig>`
+(`{ endpoint, api_key_env, models }`), and `InferenceClient` wraps it in the same hot-pluggable,
+operator-only pattern as `[mcp.*]` servers (Phase 4): `list_providers`/`add_provider`/
+`remove_provider`/`provider_health`, reachable via `Control::Providers`/`ProviderAdd`/
+`ProviderRemove`/`ProviderTest` and a Providers panel in `systema-console` (add, test, remove).
+`InferenceClient::chat_with(provider, model, ...)` lets any caller complete against a named
+provider directly, bypassing tier routing.
+
+**Not yet done:** per-turn routing. The existing agent loop still always calls `complete(tier, ...)`
+(fast/deep against the default `endpoint`, falling back to `cloud_endpoint`) -- a configured
+provider doesn't yet change what a running agent actually uses. Wiring provider/model selection
+into the turn loop (per-agent, or per-message from the chat UI) is the next step here, and touches
+the turn loop itself rather than being purely additive like everything shipped so far.
+
+## Phase 6 -- a real chat window
+
+The console's "Ask an agent" was a single fire-and-forget textbox: no history, no transcript, no
+way to see what an agent actually did on a past turn. Systema's kernel already recorded all of
+this (`runs.rs`: prompt, every tool step, final answer, per turn, persisted to `runs.jsonl`) --
+`systema history`/`systema replay` have rendered it from the CLI since early on. The console simply
+never exposed it.
+
+Shipped: `Control::History { agent, limit }` (`runs::list`) and `Control::Replay { id }`
+(`runs::get`), `GET /api/history`/`GET /api/history/<id>` in `systema-console`, and a History tab
+alongside Live trace: pick an agent (or all), see recent turns with their outcome, click one to
+load its full transcript (prompt, every tool step, the answer) -- using data the kernel was
+already producing, zero new kernel logic.
+
+**Not yet done:** live-updating the transcript of an *in-progress* turn (today you see it land in
+History once it finishes, or watch it stream raw in the Live-trace tab, but not both merged into
+one view); and no chat-level "projects" grouping (iii's project/chat organization) -- Systema's
+unit is the agent+session, not a project.
+
+## Phase 7 -- project/file management
+
+iii's "Add project" ties a chat to a working directory with file access. Systema's analog is each
+agent's workspace (`~/.systema/workspaces/<agent>/`, "always readable and writable, not private"
+per docs/ARCHITECTURE.md) -- but nothing browsed or uploaded into it from the console.
+
+Shipped: `Broker::workspace_subpath` (lexical containment check, same confinement model as the
+broker's own `resolve_existing`/`resolve_for_write`, but operator-level -- for the console's file
+browser, not an agent tool call) backs three new commands: `Control::WorkspaceList`/`WorkspaceRead`
+(text preview, 256 KiB cap)/`WorkspaceWrite` (base64 body, binary-safe -- the upload path). The
+console's Workspace panel: pick an agent, browse directories (breadcrumb navigation), preview a
+file, upload one into the current directory. Verified live, including that a `../`-style escape is
+rejected (`"path escapes the workspace"`) before any filesystem call.
+
+This is deliberately operator-only (reachable only via the control socket, which an agent never
+touches): it does not add a new path for an *agent* to reach outside its own workspace, and does
+not change `check`'s existing `fs_read`/`fs_write` gating in any way.
+
 ## License note
 
 Everything above is Systema code (Apache-2.0) implementing an architecture *pattern* observed in

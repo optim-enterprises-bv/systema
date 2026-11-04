@@ -22,7 +22,13 @@
       node restart -- Systema's version of iii's `compose::add`. Never widens what an agent may
       call: the manifest's `capabilities.mcp` allowlist is unaffected. See
       [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 4.
-
+- [x] **Provider/model registry, chat history, and a workspace file browser in the console.**
+      `Control::Providers`/`ProviderAdd`/`ProviderRemove`/`ProviderTest` (hot-pluggable, same
+      pattern as MCP servers) plus a Providers panel; `Control::History`/`Replay` expose the
+      existing `runs.jsonl` as a real chat-history/transcript tab; `Control::Workspace{List,Read,
+      Write}` (operator-only, path-confined) give the console a file browser + upload into an
+      agent's workspace. Per-turn provider routing is still open. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phases 5-7.
 
 
 

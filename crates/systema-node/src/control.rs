@@ -54,8 +54,31 @@ pub enum Control {
     Forget { agent: String, key: String },
     /// Loaded agents and their capabilities/skills.
     Agents,
+    /// Recent completed turns (`runs.jsonl`), optionally for one agent -- the chat history list
+    /// a real transcript view is built from. Newest first.
+    History { agent: Option<String>, limit: usize },
+    /// List entries directly under `path` ("" = root) inside `agent`'s workspace -- the
+    /// console's file browser. Operator-level; confined via `Broker::workspace_subpath`.
+    WorkspaceList { agent: String, path: String },
+    /// Read one file from an agent's workspace as UTF-8 text (lossy), capped for display.
+    WorkspaceRead { agent: String, path: String },
+    /// Write (create or overwrite) a file in an agent's workspace -- upload. `content_base64`
+    /// is the file's exact bytes, base64-encoded (binary-safe).
+    WorkspaceWrite { agent: String, path: String, content_base64: String },
+    /// One turn's full trace by id or id prefix -- prompt, every tool step, the final answer.
+    Replay { id: String },
     /// Node vitals for status panels: peer id, addresses, counts.
     Status,
+    /// Named inference providers beyond the default `endpoint`/`cloud_endpoint` (Phase 5 of
+    /// docs/IIi-FUSION.md). Not yet used for per-turn routing -- see that doc.
+    Providers,
+    /// Add or replace a named provider at runtime.
+    ProviderAdd { name: String, config: systema_kernel::config::ProviderConfig },
+    /// Remove a named provider.
+    ProviderRemove { name: String },
+    /// Reachability check: `GET <endpoint>/models` on the named provider, or the default
+    /// endpoint when `name` is omitted.
+    ProviderTest { name: Option<String> },
     /// The node's current `[mcp.*]` server roster (startup-configured plus any added at
     /// runtime). See Phase 4 of docs/IIi-FUSION.md.
     McpServers,
