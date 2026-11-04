@@ -1,5 +1,31 @@
 # Systema roadmap
 
+> See also [docs/IIi-FUSION.md](docs/IIi-FUSION.md): folding useful parts of the iii engine's model
+> (generic triggers, a composable function surface, a browser console) into Systema natively.
+
+- [x] **Browser console** (`systema-console`) — a small `axum` server over the existing
+      control-socket protocol: agent catalog, swarm peers, approvals inbox, sessions, and a live
+      Server-Sent-Events trace feed in a browser, alongside the TUI. No new security surface: every
+      request is forwarded verbatim through the same trust gate and broker. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 1.
+- [x] **More triggers: daily clock-time and an HTTP webhook.** `at = "HH:MM"` (UTC) and
+      `on_http = "<name>"` join `every`/`on_change`/`on_board` in `schedules.toml`; the webhook kind
+      fires on demand via `POST /api/webhook/<name>` on `systema-console`, never polled. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 2. *Remaining: an inbound-swarm-message
+      trigger.*
+- [x] **Outer policy-hook layer.** `policy::PolicyHook`, consulted before the capability broker
+      on every tool call; a hook can only veto (never approve). Shipped with `RateLimiter`
+      (`[policy] rate_limit_per_minute`) as a wall-clock backstop independent of manifests. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 3.
+- [x] **Hot-pluggable MCP servers.** `Control::McpServers`/`McpAdd`/`McpRemove` (and
+      `systema-console`'s MCP panel) add, replace, or remove an `[mcp.<name>]` server without a
+      node restart -- Systema's version of iii's `compose::add`. Never widens what an agent may
+      call: the manifest's `capabilities.mcp` allowlist is unaffected. See
+      [docs/IIi-FUSION.md](docs/IIi-FUSION.md) Phase 4.
+
+
+
+
 Where Systema stands against other agentic systems (Claude Code / Agent SDK, Hermes, OpenAI
 Codex/Swarm, LangGraph, CrewAI, Google ADK + Agent Engine, Letta/MemGPT, the A2A/MCP ecosystem),
 and what to build next. Ordered by leverage for the goal: a **local agentic OS with a swarm**.

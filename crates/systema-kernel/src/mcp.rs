@@ -287,6 +287,14 @@ impl McpManager {
         map.insert(name.to_string(), c.clone());
         Ok(c)
     }
+
+    /// Drop a cached client, if any. `kill_on_drop` stops its process once the last `Arc`
+    /// reference goes away, so a config change (`Control::McpAdd`) or removal
+    /// (`Control::McpRemove`) takes effect immediately rather than waiting for the next failed
+    /// call to notice the server is gone or different.
+    pub async fn remove(&self, name: &str) {
+        self.clients.lock().await.remove(name);
+    }
 }
 
 /// OpenAI function names allow `[a-zA-Z0-9_-]{1,64}`.

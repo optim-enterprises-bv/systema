@@ -942,6 +942,65 @@ impl Node {
                     "pending_approvals": self.pending_approvals.lock().unwrap().len(),
                 }))
             }
+            Control::McpServers => Ok(json!(
+                self.kernel
+                    .broker
+                    .list_mcp_servers()
+                    .into_iter()
+                    .map(|(name, cfg)| json!({
+                        "name": name,
+                        "command": cfg.command,
+                        "args": cfg.args,
+                        "tools": cfg.tools,
+                        "mode": format!("{:?}", cfg.mode).to_lowercase(),
+                        "private": cfg.private,
+                        "outbound": cfg.outbound,
+                        "untrusted": cfg.untrusted,
+                    }))
+                    .collect::<Vec<_>>()
+            )),
+            Control::McpAdd { name, config } => {
+                info!(mcp_server = %name, "adding/replacing mcp server at runtime");
+                // Dropping any live client (async: the manager's map is a tokio Mutex) must
+                // happen off this sync handler, like `Control::Route` does for its model call.
+                let kernel = self.kernel.clone();
+                tokio::spawn(async move {
+                    kernel.mcp.remove(&name).await;
+                    kernel.broker.add_mcp_server(name.clone(), config);
+                    let _ = reply.send(Ok(json!({ "added": name })));
+                });
+                return;
+            }
+            Control::McpRemove { name } => {
+                let kernel = self.kernel.clone();
+                tokio::spawn(async move {
+                    kernel.mcp.remove(&name).await;
+                    let existed = kernel.broker.remove_mcp_server(&name);
+                    let _ = reply.send(Ok(json!({ "removed": name, "existed": existed })));
+                });
+                return;
+            }
+            Control::FireWebhook { name } => {
+                let mut fired = Vec::new();
+                let mut skipped = Vec::new();
+                for job in systema_kernel::schedule::http_jobs(&self.home, &name) {
+                    let session = format!("sched:{}", job.name);
+                    if self.running.contains_key(&session) {
+                        debug!(job = %job.name, "webhook-triggered job still running; skipping this fire");
+                        skipped.push(job.name);
+                        continue;
+                    }
+                    if self.kernel.agent(&job.agent).is_none() {
+                        warn!(job = %job.name, agent = %job.agent, "webhook-triggered job names an unknown agent");
+                        skipped.push(job.name);
+                        continue;
+                    }
+                    info!(job = %job.name, agent = %job.agent, webhook = %name, "firing webhook-triggered job");
+                    self.spawn_operator_turn(job.agent.clone(), session, job.prompt.clone());
+                    fired.push(job.name);
+                }
+                Ok(json!({ "fired": fired, "skipped": skipped }))
+            }
             // Streamed by the socket handler, never dispatched here.
             Control::Watch => Err("watch is a streaming command".into()),
         };

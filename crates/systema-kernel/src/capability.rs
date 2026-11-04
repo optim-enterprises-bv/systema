@@ -206,7 +206,13 @@ pub struct Broker {
     systema_home: PathBuf,
     user_home: PathBuf,
     protected: Vec<PathBuf>,
-    mcp: std::collections::BTreeMap<String, McpServerConfig>,
+    /// `[mcp.<name>]` roster. Runtime-mutable (Phase 4 of docs/IIi-FUSION.md -- iii calls this
+    /// `compose::add`: extend a live system without a restart) via `add_mcp_server` /
+    /// `remove_mcp_server`. This never widens what an agent may call: `check`'s
+    /// `caps.mcp.contains(server)` gate still comes first and is fixed at manifest-load time --
+    /// adding a server here only supplies or swaps the *implementation* behind a name an
+    /// operator already pre-approved in that agent's manifest.
+    mcp: std::sync::RwLock<std::collections::BTreeMap<String, McpServerConfig>>,
     /// microVM sandbox is enabled and its runtime is available, so a public agent may have a
     /// shell (run inside the microVM). When false, a public shell stays denied.
     sandbox: bool,
@@ -236,11 +242,28 @@ impl Broker {
         let mut protected: Vec<PathBuf> = PROTECTED_IN_HOME.iter().map(|p| canonical_or_normal(&user_home.join(p))).collect();
         protected.extend(PROTECTED_SYSTEM.iter().map(|p| canonical_or_normal(Path::new(p))));
         protected.push(systema_home.clone());
-        Self { systema_home, user_home, protected, mcp, sandbox }
+        Self { systema_home, user_home, protected, mcp: std::sync::RwLock::new(mcp), sandbox }
     }
 
-    pub fn mcp_server(&self, name: &str) -> Option<&McpServerConfig> {
-        self.mcp.get(name)
+    pub fn mcp_server(&self, name: &str) -> Option<McpServerConfig> {
+        self.mcp.read().unwrap().get(name).cloned()
+    }
+
+    /// The current `[mcp.*]` roster, configured at startup plus any added at runtime.
+    pub fn list_mcp_servers(&self) -> Vec<(String, McpServerConfig)> {
+        self.mcp.read().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Add or replace a server at runtime. See the `mcp` field doc: this only ever supplies an
+    /// implementation for a name; it cannot make an agent's manifest name a new one.
+    pub fn add_mcp_server(&self, name: String, cfg: McpServerConfig) {
+        self.mcp.write().unwrap().insert(name, cfg);
+    }
+
+    /// Remove a server. Returns whether one existed. Does not stop an already-started process --
+    /// pair with `McpManager::remove` for that (see `Control::McpRemove`).
+    pub fn remove_mcp_server(&self, name: &str) -> bool {
+        self.mcp.write().unwrap().remove(name).is_some()
     }
 
     /// Working directory and HOME of an MCP server process.
@@ -502,7 +525,8 @@ impl Broker {
                 if !caps.mcp.contains(server) {
                     return Checked::deny(format!("this agent may not use mcp server `{server}`"));
                 }
-                let Some(cfg) = self.mcp.get(server) else {
+                let mcp = self.mcp.read().unwrap();
+                let Some(cfg) = mcp.get(server) else {
                     return Checked::deny(format!("mcp server `{server}` is not configured"));
                 };
                 if cfg.tools.as_ref().is_some_and(|allow| !allow.contains(tool)) {
@@ -911,5 +935,38 @@ mod tests {
         // A web search after reading private files would complete the trifecta.
         let after_read = op.with(PRIVATE);
         assert!(matches!(e.broker.check(&m, &after_read, &mcp("web", "search")).decision, Decision::Ask { .. }));
+    }
+
+    #[test]
+    fn mcp_servers_can_be_added_and_removed_at_runtime() {
+        let e = env();
+        let mut m = manifest();
+        m.capabilities.mcp.push("runtime".into());
+        let req = mcp("runtime", "search");
+        // Named in the manifest but not configured yet: denied.
+        assert!(matches!(e.broker.check(&m, &TrustState::operator(), &req).decision, Decision::Deny(_)));
+        assert!(e.broker.list_mcp_servers().iter().all(|(n, _)| n != "runtime"));
+        e.broker.add_mcp_server(
+            "runtime".into(),
+            McpServerConfig {
+                command: "true".into(),
+                args: vec![],
+                env: Default::default(),
+                tools: None,
+                ask_tools: vec![],
+                mode: GrantMode::Allow,
+                private: false,
+                outbound: false,
+                untrusted: false,
+            },
+        );
+        assert!(e.broker.list_mcp_servers().iter().any(|(n, _)| n == "runtime"));
+        assert_eq!(e.broker.check(&m, &TrustState::operator(), &req).decision, Decision::Allow);
+        // Still capability-gated: adding the server never grants it to an agent whose manifest
+        // never named it -- the ceiling is unaffected by what now exists.
+        assert!(matches!(e.broker.check(&manifest(), &TrustState::operator(), &req).decision, Decision::Deny(_)));
+        assert!(e.broker.remove_mcp_server("runtime"));
+        assert!(matches!(e.broker.check(&m, &TrustState::operator(), &req).decision, Decision::Deny(_)));
+        assert!(!e.broker.remove_mcp_server("runtime")); // already gone
     }
 }

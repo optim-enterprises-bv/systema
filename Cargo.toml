@@ -7,6 +7,7 @@ members = [
     "crates/systema-node",
     "crates/systema-cli",
     "crates/systema-tui",
+    "crates/systema-console",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ base64 = "0.23"
 rand = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+tokio-stream = "0.1"
 ratatui = "0.30"
 crossterm = "0.29"
 futures = "0.3"
@@ -37,6 +39,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+axum = "0.8"
 libp2p-identity = { version = "0.3", features = ["ed25519", "peerid", "rand"] }
 libp2p = { version = "0.57", features = [
     "tokio", "tcp", "quic", "dns", "noise", "yamux", "macros",

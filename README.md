@@ -4,7 +4,8 @@
 [titan-engine](../src/titan-engine)), coordinate to get work done, and discover and delegate to
 agents on other people's machines — forming a swarm across the internet. Every action an agent takes
 goes through a capability broker that enforces a hard security model, so "capable" never means
-"unsafe".
+"unsafe". A browser console (`systema-console`) gives the whole thing a live dashboard alongside the
+cockpit TUI.
 
 > *systema agentium*: Latin, "a system of agents".
 

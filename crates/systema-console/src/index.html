@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Systema Console</title>
+<style>
+  :root {
+    --bg: #1a1b26; --bg2: #24283b; --fg: #c0caf5; --dim: #565f89;
+    --accent: #7aa2f7; --ok: #9ece6a; --err: #f7768e; --warn: #e0af68;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    background: var(--bg); color: var(--fg); font-size: 13px;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; background: var(--bg2); border-bottom: 1px solid #333a56;
+  }
+  header h1 { font-size: 15px; margin: 0; color: var(--accent); font-weight: 600; }
+  #status-line { color: var(--dim); }
+  main {
+    display: grid; grid-template-columns: 260px 1fr 320px; gap: 10px;
+    padding: 10px; height: calc(100vh - 44px);
+  }
+  .col { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .panel {
+    background: var(--bg2); border: 1px solid #333a56; border-radius: 6px;
+    padding: 10px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
+  }
+  .panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); margin: 0 0 8px;
+  }
+  .row { padding: 5px 0; border-bottom: 1px solid #292e42; }
+  .row:last-child { border-bottom: none; }
+  .muted { color: var(--dim); }
+  button {
+    background: var(--accent); color: #1a1b26; border: none; border-radius: 4px;
+    padding: 4px 10px; font-family: inherit; font-size: 12px; cursor: pointer; margin-right: 6px;
+  }
+  button.deny { background: var(--err); }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  textarea, input, select {
+    width: 100%; background: var(--bg); color: var(--fg); border: 1px solid #333a56;
+    border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px; margin-bottom: 6px;
+  }
+  #events { font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .ev { padding: 3px 0; border-bottom: 1px solid #1f2335; }
+  .ev .k { color: var(--accent); }
+  #ask-answer { white-space: pre-wrap; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9632; Systema Console</h1>
+  <span id="status-line">connecting…</span>
+</header>
+<main>
+  <div class="col">
+    <div class="panel" id="agents-panel"><h2>Agents</h2><div id="agents"></div></div>
+    <div class="panel" id="peers-panel"><h2>Swarm peers</h2><div id="peers"></div></div>
+    <div class="panel" id="mcp-panel">
+      <h2>MCP servers (runtime)</h2>
+      <div id="mcp-servers"></div>
+      <input id="mcp-name" placeholder="name">
+      <input id="mcp-command" placeholder="command, e.g. npx">
+      <input id="mcp-args" placeholder="args, comma-separated">
+      <button class="ghost" onclick="addMcpServer()">Add / replace</button>
+    </div>
+  </div>
+  <div class="col">
+    <div class="panel" style="flex: 0 0 auto;">
+      <h2>Ask an agent</h2>
+      <select id="ask-agent"></select>
+      <textarea id="ask-text" rows="3" placeholder="what do you need?"></textarea>
+      <button onclick="doAsk()">Send</button>
+      <div id="ask-answer"></div>
+    </div>
+    <div class="panel">
+      <h2>Live trace</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="panel"><h2>Approvals</h2><div id="approvals"></div></div>
+    <div class="panel"><h2>Inbox (unknown peers)</h2><div id="inbox"></div></div>
+    <div class="panel"><h2>Sessions</h2><div id="sessions"></div></div>
+  </div>
+</main>
+<script>
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function refreshStatus() {
+  try {
+    const s = await api('/api/status');
+    document.getElementById('status-line').textContent =
+      `peer ${s.peer_id || '?'} · ${(s.addresses||[]).length} addr · ${s.peer_count ?? s.peers ?? '?'} peers`;
+  } catch (e) { document.getElementById('status-line').textContent = 'node unreachable: ' + e.message; }
+}
+
+async function refreshAgents() {
+  try {
+    const list = await api('/api/agents');
+    const arr = Array.isArray(list) ? list : (list.agents || []);
+    document.getElementById('agents').innerHTML = arr.map(a =>
+      `<div class="row"><b>${esc(a.name||a)}</b><br><span class="muted">${esc(a.description||'')}</span></div>`
+    ).join('') || '<div class="muted">no agents loaded</div>';
+    const sel = document.getElementById('ask-agent');
+    sel.innerHTML = arr.map(a => `<option value="${esc(a.name||a)}">${esc(a.name||a)}</option>`).join('');
+  } catch (e) { document.getElementById('agents').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+
+async function refreshPeers() {
+  try {
+    const list = await api('/api/peers');
+    const arr = Array.isArray(list) ? list : (list.peers || []);
+    document.getElementById('peers').innerHTML = arr.map(p =>
+      `<div class="row">${esc(p.peer_id||p.id||p)}<br><span class="muted">${esc((p.skills||[]).join(', '))}</span></div>`
+    ).join('') || '<div class="muted">no peers discovered</div>';
+  } catch (e) { document.getElementById('peers').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+
+async function refreshApprovals() {
+  try {
+    const list = await api('/api/approvals');
+    const arr = Array.isArray(list) ? list : (list.approvals || []);
+    document.getElementById('approvals').innerHTML = arr.map(a => `
+      <div class="row">
+        <div>${esc(a.agent||'')}: ${esc(a.request||a.reason||'')}</div>
+        <button onclick="resolveApproval('${a.id}','once')">Allow once</button>
+        <button onclick="resolveApproval('${a.id}','always')">Always</button>
+        <button class="deny" onclick="resolveApproval('${a.id}','deny')">Deny</button>
+      </div>`
+    ).join('') || '<div class="muted">nothing waiting</div>';
+  } catch (e) { document.getElementById('approvals').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+
+async function resolveApproval(id, answer) {
+  await api('/api/resolve', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ id, answer, remember: answer === 'always' }) });
+  refreshApprovals();
+}
+
+async function refreshInbox() {
+  try {
+    const list = await api('/api/inbox');
+    const arr = Array.isArray(list) ? list : (list.inbox || []);
+    document.getElementById('inbox').innerHTML = arr.map(i => `
+      <div class="row">
+        <div>${esc(i.peer||'')} → ${esc(i.skill||'')}</div>
+        <button onclick="approveInbox('${i.id}')">Approve</button>
+        <button class="deny" onclick="rejectInbox('${i.id}')">Reject</button>
+      </div>`
+    ).join('') || '<div class="muted">empty</div>';
+  } catch (e) { document.getElementById('inbox').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+async function approveInbox(id) {
+  await api('/api/approve', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ id, per_hour: 10, hours: null }) });
+  refreshInbox();
+}
+async function rejectInbox(id) {
+  await api('/api/reject', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ id }) });
+  refreshInbox();
+}
+
+async function refreshSessions() {
+  try {
+    const list = await api('/api/sessions');
+    const arr = Array.isArray(list) ? list : (list.sessions || []);
+    document.getElementById('sessions').innerHTML = arr.map(s =>
+      `<div class="row">${esc(s.session||'')} <span class="muted">[${esc(s.state||'')}]</span></div>`
+    ).join('') || '<div class="muted">idle</div>';
+  } catch (e) { document.getElementById('sessions').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+
+async function doAsk() {
+  const agent = document.getElementById('ask-agent').value;
+  const text = document.getElementById('ask-text').value;
+  const out = document.getElementById('ask-answer');
+  out.textContent = 'thinking…';
+  try {
+    const r = await api('/api/ask', { method: 'POST', headers: {'content-type':'application/json'},
+      body: JSON.stringify({ agent, text }) });
+    out.textContent = r.answer || JSON.stringify(r);
+  } catch (e) { out.textContent = 'error: ' + e.message; }
+}
+
+function startEvents() {
+  const box = document.getElementById('events');
+  const es = new EventSource('/api/events');
+  es.onmessage = (ev) => {
+    let k = ev.data, label = '';
+    try { const j = JSON.parse(ev.data); k = JSON.stringify(j); label = j.event || ''; } catch {}
+    const div = document.createElement('div');
+    div.className = 'ev';
+    div.innerHTML = `<span class="k">[${esc(label)}]</span> ${esc(k)}`;
+    box.prepend(div);
+    while (box.children.length > 300) box.removeChild(box.lastChild);
+  };
+  es.onerror = () => { es.close(); setTimeout(startEvents, 3000); };
+}
+
+async function refreshMcpServers() {
+  try {
+    const list = await api('/api/mcp-servers');
+    const arr = Array.isArray(list) ? list : (list.servers || []);
+    document.getElementById('mcp-servers').innerHTML = arr.map(s => `
+      <div class="row">
+        <b>${esc(s.name)}</b> <span class="muted">${esc(s.command)} ${esc((s.args||[]).join(' '))}</span>
+        <button class="deny" onclick="removeMcpServer('${esc(s.name)}')">Remove</button>
+      </div>`
+    ).join('') || '<div class="muted">none configured</div>';
+  } catch (e) { document.getElementById('mcp-servers').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+async function addMcpServer() {
+  const name = document.getElementById('mcp-name').value.trim();
+  const command = document.getElementById('mcp-command').value.trim();
+  const args = document.getElementById('mcp-args').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!name || !command) return;
+  await api('/api/mcp-servers', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ name, config: { command, args, env: {}, tools: null, ask_tools: [],
+      mode: 'allow', private: true, outbound: true, untrusted: true } }) });
+  refreshMcpServers();
+}
+async function removeMcpServer(name) {
+  await fetch('/api/mcp-servers/' + encodeURIComponent(name), { method: 'DELETE' });
+  refreshMcpServers();
+}
+
+function refreshAll() {
+  refreshStatus(); refreshAgents(); refreshPeers(); refreshApprovals(); refreshInbox(); refreshSessions(); refreshMcpServers();
+}
+refreshAll();
+setInterval(refreshAll, 4000);
+startEvents();
+</script>
+</body>
+</html>
