@@ -123,7 +123,8 @@ pub fn ensure_identity(home: &Path) -> anyhow::Result<Keypair> {
     use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
     std::fs::create_dir_all(home).with_context(|| format!("create {}", home.display()))?;
-    std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
+    // Best effort: on a mounted volume the directory may belong to another uid (fsGroup access).
+    let _ = std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700));
     let path: PathBuf = home.join("identity.key");
     match std::fs::read(&path) {
         Ok(bytes) => Keypair::from_protobuf_encoding(&bytes).map_err(|e| anyhow!("corrupt identity key {}: {e}", path.display())),

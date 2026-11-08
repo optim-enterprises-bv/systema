@@ -1,0 +1,91 @@
+# Public bootstrap + relay hub. Image comes from the private optim registry (pull secret `regcred`).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-hub
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hub-state
+  namespace: swarm-hub
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: linstor-lvm-r1
+  resources:
+    requests:
+      storage: 100Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hub-config
+  namespace: swarm-hub
+data:
+  # Advertised addresses. Peers learn these from identify, so they must be the public name.
+  EXTERNAL_TCP: /dns4/hub.optimcloud.com/tcp/4001
+  EXTERNAL_QUIC: /dns4/hub.optimcloud.com/udp/4001/quic-v1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: systema-hub
+  namespace: swarm-hub
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: systema-hub}
+  template:
+    metadata:
+      labels: {app: systema-hub}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: regcred}]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: hub
+          image: registry.optimcloud.com/optim/systema-agentium/hub:dev
+          args:
+            - --external=$(EXTERNAL_TCP)
+            - --external=$(EXTERNAL_QUIC)
+          envFrom:
+            - configMapRef: {name: hub-config}
+          ports:
+            - {name: tcp, containerPort: 4001, protocol: TCP}
+            - {name: quic, containerPort: 4001, protocol: UDP}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/systema-hub}
+      volumes:
+        - name: state
+          persistentVolumeClaim: {claimName: hub-state}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: systema-hub
+  namespace: swarm-hub
+  annotations:
+    io.cilium/lb-ipam-ips: "192.168.10.205"  # stable address for the router port-forward
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector: {app: systema-hub}
+  ports:
+    - {name: tcp, port: 4001, targetPort: 4001, protocol: TCP}
+    - {name: quic, port: 4001, targetPort: 4001, protocol: UDP}

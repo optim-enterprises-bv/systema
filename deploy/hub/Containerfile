@@ -1,0 +1,11 @@
+# Build from the repository root:  podman build -f deploy/hub/Containerfile -t systema-hub .
+FROM docker.io/library/rust:1-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p systema-hub --locked && strip target/release/systema-hub
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=build /src/target/release/systema-hub /usr/local/bin/systema-hub
+ENV SYSTEMA_HUB_HOME=/var/lib/systema-hub
+EXPOSE 4001/tcp 4001/udp
+ENTRYPOINT ["/usr/local/bin/systema-hub"]
