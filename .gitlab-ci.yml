@@ -1,0 +1,56 @@
+# GitLab CI for Systema Agentium (the swarm). GitHub Actions is off; the repo reaches GitLab as a
+# one-commit snapshot per branch (cluster CronJob ci-sync, every 3 minutes).
+
+stages:
+  - test
+  - build
+
+variables:
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  CARGO_INCREMENTAL: "0"
+
+test:
+  stage: test
+  image: rust:1-bookworm
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "3Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
+    KUBERNETES_CPU_LIMIT: "4"
+  cache:
+    key: systema-swarm-cargo
+    paths:
+      - .cargo/
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+  script:
+    - cargo test -p systema-hub -p systema-trust -p systema-kernel -p systema-node --locked
+
+# The public hub image (DHT + relay), built from deploy/hub/Containerfile.
+build-hub-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  needs:
+    - test
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "6Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+    KUBERNETES_CPU_LIMIT: "6"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+  before_script:
+    - mkdir -p /kaniko/context /kaniko/.docker
+    - cp -a "$CI_PROJECT_DIR/." /kaniko/context/
+    - |
+      echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+  script:
+    - >
+      /kaniko/executor
+      --context dir:///kaniko/context
+      --dockerfile /kaniko/context/deploy/hub/Containerfile
+      --destination "$CI_REGISTRY_IMAGE/hub:latest"
+      --destination "$CI_REGISTRY_IMAGE/hub:$CI_COMMIT_SHORT_SHA"
+      --cache=false
+      --push-retry 5
