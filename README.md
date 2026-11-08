@@ -85,7 +85,8 @@ systema --home /tmp/a send <B-peer-id> coder --skill code-review "fn add(a:i32,b
 
 ## Running a public bootstrap + relay (a small VPS)
 
-A public node can bootstrap discovery and relay traffic for nodes behind NAT:
+For a public machine, run the slim [`systema-hub`](docs/HUB.md): it serves only the DHT and the relay, with no
+agents or state to defend. A full node can do the same job:
 
 ```toml
 [node]
@@ -104,6 +105,7 @@ where the NATs allow it — validate across two real NATs with `scripts/holepunc
 
 - **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** — the full reference: every tool, CLI command and
   config key, and the state files.
+- **[docs/HUB.md](docs/HUB.md)** — the public bootstrap and relay (`systema-hub`).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the security model, enforced in code.
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — where Systema stands against other agentic systems, what's
   shipped and what's next.
