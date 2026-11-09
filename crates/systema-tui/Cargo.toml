@@ -19,4 +19,9 @@ ratatui.workspace = true
 crossterm.workspace = true
 systema-kernel.workspace = true
 systema-node.workspace = true
+# The Engine tab speaks the engine's WebSocket protocol directly (two messages: invokefunction and
+# invocationresult), so this workspace needs nothing from the private registry.
+futures.workspace = true
+tokio-tungstenite = "0.26"
+uuid = { version = "1", features = ["v4"] }
 
