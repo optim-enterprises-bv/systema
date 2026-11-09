@@ -15,7 +15,7 @@ PORT=${PORT:-47301}
 fail() { echo "FAIL: $*"; echo "logs in $S"; exit 1; }
 
 for n in a b; do
-  $B --home $S/$n init >/dev/null
+  $B --home $S/$n init --no-hub >/dev/null
   sed -i -e 's/^mdns = true/mdns = false/' -e 's/^gossip_cards = true/gossip_cards = false/' $S/$n/systema.toml
 done
 HID=$($HUB --home $S/h --print-peer-id) || fail "hub identity"

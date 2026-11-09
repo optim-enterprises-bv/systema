@@ -12,7 +12,7 @@ S=$(mktemp -d)
 PORT=${PORT:-47201}
 
 for n in a b r; do
-  $B --home $S/$n init >/dev/null
+  $B --home $S/$n init --no-hub >/dev/null
   sed -i -e 's/^mdns = true/mdns = false/' -e 's/^gossip_cards = true/gossip_cards = false/' $S/$n/systema.toml
 done
 # R: fixed public-style address, relay server, DHT server, no public agents of its own.

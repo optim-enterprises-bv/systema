@@ -13,10 +13,35 @@ client. A stranger who connects cannot run, approve or read anything on it. Its 
 `identity.key` (same format as `systema init`), so the peer id survives restarts. It speaks the exact
 protocol names a `systema node` does (`/systema/kad/1.0.0`, `/systema/id/1.0.0`); a test pins that.
 
-Use it instead of a full node whenever the machine is public. A full node on a public address carries
+Use it instead of a full node whenever a machine is public. A full node on a public address carries
 agents and state you would then have to defend.
 
-## Run it
+## The hosted hub
+
+You do not have to run one. The project runs a public hub on its own Kubernetes cluster:
+
+| | |
+|---|---|
+| Address | `/dns4/hub.optimcloud.com/tcp/4001/p2p/12D3KooWNN5VEhrHWM2zSycb8bkjQTimiQpLc5eAGnffcqDKszx3` |
+| Also on | `/dns4/hub.optimcloud.com/udp/4001/quic-v1/p2p/<same peer id>` |
+| Relay limits | 128 reservations, 32 circuits, 4 per peer, 15 minutes and 4 MiB per circuit |
+
+`systema init` points a new node's `bootstrap` at it, so a node you create is discoverable by default:
+it announces the skills of its `public = true` agents in the DHT, and other nodes find it through the
+hub. Requests still hit your trust gate, and an unknown peer's first request waits in your inbox until
+you approve it. A node behind NAT also sets `relays` to the same address to be reachable through the hub.
+
+What the hub can see: the peer ids and IP addresses of nodes that connect, and the skill ids they
+announce. Connections between nodes are encrypted end to end (Noise), including those that travel through
+the relay, so the hub does not see request or reply contents. The circuit limits mean the relay carries
+signalling and small messages, not bulk data; a direct connection (DCUtR hole punching) carries the rest
+when both NATs allow it.
+
+It is run best-effort, without an uptime guarantee. To stay on the LAN only, run `systema init --no-hub`
+(or set `SYSTEMA_NO_HUB=1`), or delete the `bootstrap` line from `systema.toml`. To depend on nobody,
+host your own hub as described below and list it in `bootstrap` instead. You can list several.
+
+## Host your own
 
 ```sh
 systema-hub --home /var/lib/systema-hub \
