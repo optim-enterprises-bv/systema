@@ -36,13 +36,6 @@ fn home_dir() -> PathBuf {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let home = home_dir();
-    if !control::socket_path(&home).exists() {
-        eprintln!(
-            "No running node at {} — start one with `systema node` first.",
-            control::socket_path(&home).display()
-        );
-        std::process::exit(1);
-    }
 
     // Keyboard: crossterm reads block, so poll on a dedicated thread.
     let (key_tx, mut key_rx) = mpsc::unbounded_channel();
@@ -70,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     refresh(&mut appstate).await;
 
     let mut terminal = ratatui::init();
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut tick = tokio::time::interval(Duration::from_millis(120));
     let mut refresh_iv = tokio::time::interval(Duration::from_secs(2));
     refresh_iv.reset();
 
@@ -86,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 WatchMsg::Ev(e) => appstate.ingest(*e),
             },
             _ = tick.tick() => {
+                appstate.frame = appstate.frame.wrapping_add(1);
                 if let Some((_, at)) = &appstate.toast {
                     if at.elapsed() > Duration::from_secs(4) {
                         appstate.toast = None;
@@ -218,6 +212,7 @@ async fn handle_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
 
     match k.code {
         KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('n') if !app.connected => start_node(app),
         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => app.should_quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
@@ -243,5 +238,40 @@ async fn handle_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+/// Launch `systema node` for this home, detached, with its output in `<home>/node.log`. The cockpit
+/// keeps polling, so it connects as soon as the node's control socket answers.
+fn start_node(app: &mut App) {
+    use std::os::unix::process::CommandExt as _;
+    if app.node_started {
+        app.toast("node is already starting");
+        return;
+    }
+    let exe = std::env::current_exe().ok();
+    let sibling = exe.as_ref().map(|e| e.with_file_name("systema")).filter(|p| p.exists());
+    let bin = sibling.unwrap_or_else(|| PathBuf::from("systema"));
+    let _ = std::fs::create_dir_all(&app.home);
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(app.home.join("node.log"));
+    let (out, err) = match log.and_then(|l| l.try_clone().map(|c| (l, c))) {
+        Ok((a, b)) => (std::process::Stdio::from(a), std::process::Stdio::from(b)),
+        Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
+    match std::process::Command::new(&bin)
+        .arg("--home")
+        .arg(&app.home)
+        .arg("node")
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err)
+        .process_group(0)
+        .spawn()
+    {
+        Ok(_) => {
+            app.node_started = true;
+            app.toast(format!("started {} node (log: node.log)", bin.display()));
+        }
+        Err(e) => app.toast(format!("could not start {}: {e}", bin.display())),
     }
 }

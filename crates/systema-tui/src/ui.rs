@@ -20,6 +20,16 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     header(f, rows[0], app);
 
+    if !app.connected && app.agents.is_empty() {
+        splash(f, rows[1], app);
+        if app.input.is_some() {
+            input_line(f, rows[2], app);
+        } else {
+            hotbar(f, rows[2], app);
+        }
+        return;
+    }
+
     let body = Layout::vertical([Constraint::Percentage(58), Constraint::Min(5)]).split(rows[1]);
     let top = Layout::horizontal([Constraint::Percentage(26), Constraint::Min(20), Constraint::Length(34)]).split(body[0]);
     agents_panel(f, top[0], app);
@@ -43,20 +53,55 @@ fn hms(ms: u64) -> String {
 
 fn header(f: &mut Frame, area: Rect, app: &App) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-    let dot = if app.connected { Span::styled(" ● ", theme::accent(theme::GREEN)) } else { Span::styled(" ○ ", theme::accent(theme::RED)) };
+    // The live dot breathes while connected; offline it stays a hollow red ring.
+    let dot = if app.connected {
+        let on = (app.frame / 4) % 2 == 0;
+        Span::styled(if on { " ● " } else { " ◉ " }, theme::accent(theme::GREEN))
+    } else {
+        Span::styled(" ○ ", theme::accent(theme::RED))
+    };
     let running = app.sessions.values().filter(|s| matches!(s.state, SessionState::Thinking | SessionState::Tool | SessionState::Approval)).count();
     let peer = if app.status.peer_id.len() > 12 { &app.status.peer_id[..12] } else { &app.status.peer_id };
-    let left = Line::from(vec![
-        Span::styled(" SYSTEMA ", Style::default().fg(theme::BG).bg(theme::BLUE).add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled(peer.to_string(), theme::dim()),
-        dot,
-        Span::styled(if app.connected { "node up" } else { "connecting…" }, theme::fg()),
-        Span::styled(format!("   running {running}"), theme::dim()),
-    ]);
-    f.render_widget(Paragraph::new(left), area);
-    let right = Line::from(vec![Span::styled(format!("{}  tokyo night · systema ", hms(now)), theme::dim())]).alignment(Alignment::Right);
+    let mut left = vec![Span::styled("▌", theme::accent(theme::CYAN))];
+    left.extend(theme::gradient_spans(" SYSTEMA ", app.frame));
+    left.push(Span::styled("▐", theme::accent(theme::PINK)));
+    left.push(Span::raw(" "));
+    left.push(Span::styled(peer.to_string(), theme::dim()));
+    left.push(dot);
+    left.push(Span::styled(if app.connected { "node up" } else { "no node" }, theme::fg()));
+    left.push(Span::styled(format!("   ⟫ running {running}"), theme::accent(if running > 0 { theme::YELLOW } else { theme::DIM })));
+    f.render_widget(Paragraph::new(Line::from(left)), area);
+    // Tokyo time (UTC+9): the theme's one joke, and a useful second clock.
+    let jst = hms(now + 9 * 3600 * 1000);
+    let up = hms(app.started.elapsed().as_millis() as u64);
+    let right = Line::from(vec![
+        Span::styled(format!("up {up}  "), theme::dim()),
+        Span::styled("東京 ", theme::accent(theme::PINK)),
+        Span::styled(format!("{jst} "), theme::bold(theme::CYAN)),
+        Span::styled("JST ", theme::dim()),
+    ])
+    .alignment(Alignment::Right);
     f.render_widget(Paragraph::new(right), area);
+}
+
+/// No node to talk to: matrix rain behind a boxed banner and the one thing to do next.
+fn splash(f: &mut Frame, area: Rect, app: &App) {
+    f.render_widget(Paragraph::new(theme::rain(area.width, area.height, app.frame)), area);
+    let w = 54.min(area.width);
+    let h = 11.min(area.height);
+    let boxed = Rect { x: area.x + (area.width.saturating_sub(w)) / 2, y: area.y + (area.height.saturating_sub(h)) / 2, width: w, height: h };
+    f.render_widget(ratatui::widgets::Clear, boxed);
+    let mut lines: Vec<Line> = theme::BANNER
+        .iter()
+        .map(|l| Line::from(theme::gradient_spans(l, app.frame)).alignment(Alignment::Center))
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("no node running", theme::bold(theme::RED))).alignment(Alignment::Center));
+    lines.push(Line::from(Span::styled(app.home.display().to_string(), theme::dim())).alignment(Alignment::Center));
+    lines.push(Line::from(""));
+    let hint = if app.node_started { "starting the node…" } else { "press n to start a node, q to quit" };
+    lines.push(Line::from(Span::styled(hint, theme::accent(theme::YELLOW))).alignment(Alignment::Center));
+    f.render_widget(Paragraph::new(lines).block(panel("OFFLINE", Line::from(""), theme::PINK)), boxed);
 }
 
 fn agents_panel(f: &mut Frame, area: Rect, app: &App) {
@@ -207,6 +252,13 @@ fn events_panel(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     rows.reverse();
+    if rows.is_empty() {
+        // Idle: let the rain fall until something happens.
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(theme::rain(inner.width, inner.height, app.frame)), inner);
+        return;
+    }
     f.render_widget(Paragraph::new(rows).block(block), area);
 }
 
@@ -217,6 +269,9 @@ fn hotbar(f: &mut Frame, area: Rect, app: &App) {
         spans.extend(theme::keycap("y", "allow", true));
         spans.extend(theme::keycap("n", "deny", true));
         spans.extend(theme::keycap("A", "always", true));
+    }
+    if !app.connected {
+        spans.extend(theme::keycap("n", "start node", true));
     }
     spans.extend(theme::keycap("o", "ask OS", !approving));
     spans.extend(theme::keycap("a", "ask agent", !approving));
