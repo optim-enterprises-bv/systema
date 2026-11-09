@@ -123,6 +123,11 @@ pub struct App {
     pub input: Option<InputState>,
     pub toast: Option<(String, Instant)>,
     pub should_quit: bool,
+    /// Animation frame, advanced by the UI tick.
+    pub frame: u64,
+    pub started: Instant,
+    /// A node was launched from this session and has not answered yet.
+    pub node_started: bool,
 }
 
 impl App {
@@ -139,6 +144,9 @@ impl App {
             input: None,
             toast: None,
             should_quit: false,
+            frame: 0,
+            started: Instant::now(),
+            node_started: false,
         }
     }
 

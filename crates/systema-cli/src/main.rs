@@ -13,8 +13,9 @@ struct Cli {
     /// State directory (default $SYSTEMA_HOME or ~/.systema).
     #[arg(long, global = true)]
     home: Option<PathBuf>,
+    /// With no subcommand, opens the cockpit (`systema-tui`) in a terminal, and prints help otherwise.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -188,6 +189,16 @@ fn init(home: &Path, hosted_hub: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The cockpit is a sibling binary; replace this process with it, passing our resolved home.
+fn launch_tui(home: &Path) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let exe = std::env::current_exe()?;
+    let tui = exe.with_file_name("systema-tui");
+    let bin = if tui.exists() { tui } else { PathBuf::from("systema-tui") };
+    let err = std::process::Command::new(&bin).arg(home).exec();
+    anyhow::bail!("could not launch {}: {err}", bin.display());
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -196,7 +207,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let home = cli.home.unwrap_or_else(home_dir);
 
-    match cli.cmd {
+    let Some(cmd) = cli.cmd else {
+        // Bare `systema`: the cockpit when there is a terminal to draw on.
+        use std::io::IsTerminal as _;
+        if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
+            return launch_tui(&home);
+        }
+        use clap::CommandFactory as _;
+        Cli::command().print_help()?;
+        return Ok(());
+    };
+    match cmd {
         Cmd::Init { no_hub } => init(&home, !no_hub && std::env::var_os("SYSTEMA_NO_HUB").is_none())?,
         Cmd::Id => println!("{}", load_identity(&home)?.public().to_peer_id()),
         Cmd::Status => {
@@ -468,15 +489,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{line}");
             }
         }
-        Cmd::Tui => {
-            use std::os::unix::process::CommandExt as _;
-            // The cockpit is a sibling binary; run it with our resolved home.
-            let exe = std::env::current_exe()?;
-            let tui = exe.with_file_name("systema-tui");
-            let bin = if tui.exists() { tui } else { PathBuf::from("systema-tui") };
-            let err = std::process::Command::new(&bin).arg(&home).exec();
-            anyhow::bail!("could not launch {}: {err}", bin.display());
-        }
+        Cmd::Tui => launch_tui(&home)?,
     }
     Ok(())
 }
