@@ -9,7 +9,7 @@ B=${SYSTEMA_BIN:-$PWD/target/debug/systema}
 S=$(mktemp -d)
 PORT=${PORT:-47001}
 
-for n in a b c; do $B --home $S/$n init >/dev/null; done
+for n in a b c; do $B --home $S/$n init --no-hub >/dev/null; done
 for n in a b c; do
   sed -i -e 's/^mdns = true/mdns = false/' -e 's/^gossip_cards = true/gossip_cards = false/' \
          -e 's/^dht_server = "auto"/dht_server = "on"/' $S/$n/systema.toml

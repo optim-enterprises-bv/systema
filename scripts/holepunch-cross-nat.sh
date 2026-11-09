@@ -47,8 +47,8 @@ fi
 
 HOME_R=/tmp/systema-relay HOME_A=/tmp/systema-a HOME_B=/tmp/systema-b
 
-echo "## 2. init + configure"
-ssh_do "$RELAY" "$REMOTE_BIN --home $HOME_R init >/dev/null
+echo "## 2. init --no-hub + configure"
+ssh_do "$RELAY" "$REMOTE_BIN --home $HOME_R init --no-hub >/dev/null
   cd $HOME_R
   sed -i -e 's/^mdns = true/mdns = false/' -e 's/^gossip_cards = true/gossip_cards = false/' systema.toml
   sed -i -e '/^listen = \[/,/^]/c\\listen = [\"/ip4/0.0.0.0/tcp/$RELAY_PORT\"]' \
@@ -61,7 +61,7 @@ RADDR="/ip4/$RELAY_IP/tcp/$RELAY_PORT/p2p/$RID"
 echo "   relay = $RADDR"
 
 # B: behind NAT, relays through R, offers a renamed skill so A can find it.
-ssh_do "$B" "$REMOTE_BIN --home $HOME_B init >/dev/null
+ssh_do "$B" "$REMOTE_BIN --home $HOME_B init --no-hub >/dev/null
   cd $HOME_B
   sed -i -e 's/^mdns = true/mdns = false/' -e 's/^gossip_cards = true/gossip_cards = false/' \
          -e 's/^dht_server = \"auto\"/dht_server = \"off\"/' \
@@ -70,7 +70,7 @@ ssh_do "$B" "$REMOTE_BIN --home $HOME_B init >/dev/null
   sed -i 's/^id = \"code-review\"/id = \"nat-review\"/' agents/coder.toml"
 
 # A: behind a different NAT, ordinary DHT node, knows only R.
-ssh_do "$A" "$REMOTE_BIN --home $HOME_A init >/dev/null
+ssh_do "$A" "$REMOTE_BIN --home $HOME_A init --no-hub >/dev/null
   cd $HOME_A
   sed -i -e 's/^mdns = true/mdns = false/' -e 's/^gossip_cards = true/gossip_cards = false/' \
          -e 's/^dht_server = \"auto\"/dht_server = \"on\"/' \

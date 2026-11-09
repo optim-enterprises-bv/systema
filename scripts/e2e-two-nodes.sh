@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 B=${SYSTEMA_BIN:-$PWD/target/debug/systema}
 A_=(--home $S/e2e-a); B_=(--home $S/e2e-b)
 rm -rf $S/e2e-a $S/e2e-b
-for h in $S/e2e-a $S/e2e-b; do $B --home $h init >/dev/null; sed -i 's/^announce_secs = .*/announce_secs = 5/' $h/systema.toml; done
+for h in $S/e2e-a $S/e2e-b; do $B --home $h init --no-hub >/dev/null; sed -i 's/^announce_secs = .*/announce_secs = 5/' $h/systema.toml; done
 timeout 400 $B "${A_[@]}" node >$S/e2e-a.log 2>&1 &
 timeout 400 $B "${B_[@]}" node >$S/e2e-b.log 2>&1 &
 trap 'kill %1 %2 2>/dev/null' EXIT

@@ -85,7 +85,7 @@ systema --home /tmp/a send <B-peer-id> coder --skill code-review "fn add(a:i32,b
 
 ## Running a public bootstrap + relay (a small VPS)
 
-For a public machine, run the slim [`systema-hub`](docs/HUB.md): it serves only the DHT and the relay, with no
+By default a new node bootstraps from the project's hosted hub (`hub.optimcloud.com`; see [docs/HUB.md](docs/HUB.md), including how to opt out). To host your own, run the slim [`systema-hub`](docs/HUB.md) on a public machine: it serves only the DHT and the relay, with no
 agents or state to defend. A full node can do the same job:
 
 ```toml

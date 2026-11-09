@@ -13,7 +13,7 @@ BIN=${SYSTEMA_BIN:-$PWD/target/release/systema}
 S=$(mktemp -d)
 
 for n in a b; do
-  $BIN --home $S/$n init >/dev/null
+  $BIN --home $S/$n init --no-hub >/dev/null
   # Keep the default (all-interface, ephemeral) listeners so mDNS discovery works; announce often.
   sed -i -e 's/^announce_secs = .*/announce_secs = 5/' $S/$n/systema.toml
 done

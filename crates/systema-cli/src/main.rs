@@ -20,7 +20,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Create the state dir, node identity, default config and example agents.
-    Init,
+    Init {
+        /// Do not point the new config at the hosted hub (also: SYSTEMA_NO_HUB=1).
+        #[arg(long)]
+        no_hub: bool,
+    },
     /// Print this node's peer id.
     Id,
     /// Check titan-engine is reachable and list agents.
@@ -145,7 +149,12 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init(home: &Path) -> anyhow::Result<()> {
+/// The hosted public hub (DHT + circuit relay), run by the project on its own Kubernetes cluster.
+/// A new config bootstraps from it so a node is discoverable by default; remove the line, or run
+/// `systema init --no-hub`, to stay on the LAN only. See docs/HUB.md.
+const HOSTED_HUB: &str = "/dns4/hub.optimcloud.com/tcp/4001/p2p/12D3KooWNN5VEhrHWM2zSycb8bkjQTimiQpLc5eAGnffcqDKszx3";
+
+fn init(home: &Path, hosted_hub: bool) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(home.join("agents"))?;
     // Holds the identity key, control socket, grants and audit log: owner only.
@@ -162,8 +171,12 @@ fn init(home: &Path) -> anyhow::Result<()> {
     if cfg.exists() {
         println!("config     kept     {}", cfg.display());
     } else {
-        std::fs::write(&cfg, toml::to_string_pretty(&Config::default())?)?;
-        println!("config     created  {}", cfg.display());
+        let mut config = Config::default();
+        if hosted_hub {
+            config.node.bootstrap = vec![HOSTED_HUB.to_string()];
+        }
+        std::fs::write(&cfg, toml::to_string_pretty(&config)?)?;
+        println!("config     created  {}{}", cfg.display(), if hosted_hub { "  (bootstrap: hub.optimcloud.com)" } else { "" });
     }
     for (name, body) in EXAMPLE_AGENTS {
         let p = home.join("agents").join(name);
@@ -184,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
     let home = cli.home.unwrap_or_else(home_dir);
 
     match cli.cmd {
-        Cmd::Init => init(&home)?,
+        Cmd::Init { no_hub } => init(&home, !no_hub && std::env::var_os("SYSTEMA_NO_HUB").is_none())?,
         Cmd::Id => println!("{}", load_identity(&home)?.public().to_peer_id()),
         Cmd::Status => {
             let k = Kernel::new(Config::load(&home)?)?;
