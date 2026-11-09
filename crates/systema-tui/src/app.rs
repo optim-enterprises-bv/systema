@@ -103,6 +103,79 @@ pub enum InputKind {
     Steer,
     /// Ask the OS: route to the best agent, then run.
     Orchestrate,
+    /// Engine tab: a prompt to the selected session.
+    EngineChat,
+    /// Engine tab: a prompt that starts a new session.
+    EngineNew,
+    /// Engine tab: `function_id {json payload}`.
+    EngineCall,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Swarm,
+    Engine,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Sessions,
+    Workers,
+}
+
+/// Everything the Engine tab shows, fed by `engine::spawn`.
+pub struct EngineView {
+    pub url: String,
+    pub online: bool,
+    pub workers: Vec<crate::engine::WorkerRow>,
+    pub sessions: Vec<crate::engine::SessionRow>,
+    pub messages: Vec<crate::engine::MsgRow>,
+    pub msg_session: Option<String>,
+    pub sel_session: usize,
+    pub sel_worker: usize,
+    pub focus: Focus,
+    /// The last `:` call: (function, pretty result), shown over the transcript until Esc.
+    pub result: Option<(String, String)>,
+    /// Lines scrolled up from the bottom of the transcript.
+    pub scroll: u16,
+    /// Lines scrolled down from the top of a `:` call's result.
+    pub result_off: u16,
+    /// A session to select as soon as it shows up in the list (just created by a send).
+    pub want: Option<String>,
+}
+
+impl EngineView {
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            online: false,
+            workers: Vec::new(),
+            sessions: Vec::new(),
+            messages: Vec::new(),
+            msg_session: None,
+            sel_session: 0,
+            sel_worker: 0,
+            focus: Focus::Sessions,
+            result: None,
+            scroll: 0,
+            result_off: 0,
+            want: None,
+        }
+    }
+
+    pub fn selected_session(&self) -> Option<&crate::engine::SessionRow> {
+        self.sessions.get(self.sel_session)
+    }
+
+    pub fn move_sel(&mut self, delta: isize) {
+        let (sel, len) = match self.focus {
+            Focus::Sessions => (&mut self.sel_session, self.sessions.len()),
+            Focus::Workers => (&mut self.sel_worker, self.workers.len()),
+        };
+        if len > 0 {
+            *sel = (*sel as isize + delta).clamp(0, len as isize - 1) as usize;
+        }
+    }
 }
 
 pub struct InputState {
@@ -128,6 +201,9 @@ pub struct App {
     pub started: Instant,
     /// A node was launched from this session and has not answered yet.
     pub node_started: bool,
+    pub tab: Tab,
+    pub engine: EngineView,
+    pub engine_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::engine::Cmd>>,
 }
 
 impl App {
@@ -147,6 +223,9 @@ impl App {
             frame: 0,
             started: Instant::now(),
             node_started: false,
+            tab: Tab::Swarm,
+            engine: EngineView::new(crate::engine::engine_url()),
+            engine_tx: None,
         }
     }
 

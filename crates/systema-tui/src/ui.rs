@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::{App, SessionState};
+use crate::app::{App, Focus, SessionState, Tab};
 use crate::theme::{self, panel};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -19,6 +19,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     .split(f.area());
 
     header(f, rows[0], app);
+
+    if app.tab == Tab::Engine {
+        engine_view(f, rows[1], app);
+        if app.input.is_some() {
+            input_line(f, rows[2], app);
+        } else {
+            hotbar(f, rows[2], app);
+        }
+        return;
+    }
 
     if !app.connected && app.agents.is_empty() {
         splash(f, rows[1], app);
@@ -66,10 +76,24 @@ fn header(f: &mut Frame, area: Rect, app: &App) {
     left.extend(theme::gradient_spans(" SYSTEMA ", app.frame));
     left.push(Span::styled("▐", theme::accent(theme::PINK)));
     left.push(Span::raw(" "));
-    left.push(Span::styled(peer.to_string(), theme::dim()));
-    left.push(dot);
-    left.push(Span::styled(if app.connected { "node up" } else { "no node" }, theme::fg()));
-    left.push(Span::styled(format!("   ⟫ running {running}"), theme::accent(if running > 0 { theme::YELLOW } else { theme::DIM })));
+    for (key, name, tab) in [("1", "SWARM", Tab::Swarm), ("2", "ENGINE", Tab::Engine)] {
+        let on = app.tab == tab;
+        let style = if on { Style::default().fg(theme::BG).bg(theme::PINK).add_modifier(Modifier::BOLD) } else { theme::dim() };
+        left.push(Span::styled(format!(" {key} {name} "), style));
+        left.push(Span::raw(" "));
+    }
+    if app.tab == Tab::Engine {
+        let e = &app.engine;
+        let on = e.online;
+        left.push(Span::styled(if on { " ● " } else { " ○ " }, theme::accent(if on { theme::GREEN } else { theme::RED })));
+        left.push(Span::styled(if on { "engine up" } else { "engine offline" }, theme::fg()));
+        left.push(Span::styled(format!("   {} · {} workers · {} sessions", e.url, e.workers.len(), e.sessions.len()), theme::dim()));
+    } else {
+        left.push(Span::styled(peer.to_string(), theme::dim()));
+        left.push(dot);
+        left.push(Span::styled(if app.connected { "node up" } else { "no node" }, theme::fg()));
+        left.push(Span::styled(format!("   ⟫ running {running}"), theme::accent(if running > 0 { theme::YELLOW } else { theme::DIM })));
+    }
     f.render_widget(Paragraph::new(Line::from(left)), area);
     // Tokyo time (UTC+9): the theme's one joke, and a useful second clock.
     let jst = hms(now + 9 * 3600 * 1000);
@@ -263,6 +287,22 @@ fn events_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn hotbar(f: &mut Frame, area: Rect, app: &App) {
+    if app.tab == Tab::Engine {
+        let mut spans = Vec::new();
+        spans.extend(theme::keycap("j/k", "move", true));
+        spans.extend(theme::keycap("h/l", "focus", true));
+        spans.extend(theme::keycap("i", "chat", true));
+        spans.extend(theme::keycap("N", "new", true));
+        spans.extend(theme::keycap(":", "call fn", true));
+        spans.extend(theme::keycap("PgUp", "scroll", true));
+        spans.extend(theme::keycap("1", "swarm", false));
+        spans.extend(theme::keycap("q", "quit", true));
+        if let Some((msg, _)) = &app.toast {
+            f.render_widget(Paragraph::new(Line::from(Span::styled(format!("{msg} "), theme::accent(theme::YELLOW))).alignment(Alignment::Right)), area);
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
     let approving = app.next_approval().is_some();
     let mut spans = Vec::new();
     if approving {
@@ -291,6 +331,9 @@ fn input_line(f: &mut Frame, area: Rect, app: &App) {
         crate::app::InputKind::Ask => "ask",
         crate::app::InputKind::Steer => "steer",
         crate::app::InputKind::Orchestrate => "ask OS",
+        crate::app::InputKind::EngineChat => "chat",
+        crate::app::InputKind::EngineNew => "new chat",
+        crate::app::InputKind::EngineCall => "call",
     };
     let line = Line::from(vec![
         Span::styled(format!(" {label} "), Style::default().fg(theme::BG).bg(theme::PURPLE).add_modifier(Modifier::BOLD)),
@@ -330,4 +373,119 @@ fn textwrap(text: &str, width: usize, max: usize) -> Vec<String> {
         }
     }
     out
+}
+
+fn ago(ms: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let s = now.saturating_sub(ms) / 1000;
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m", s / 60),
+        3600..=86399 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86400),
+    }
+}
+
+/// The Engine tab: sessions + workers on the left, the selected session's transcript on the right.
+fn engine_view(f: &mut Frame, area: Rect, app: &App) {
+    let e = &app.engine;
+    if !e.online && e.workers.is_empty() {
+        f.render_widget(Paragraph::new(theme::rain(area.width, area.height, app.frame)), area);
+        let w = 60.min(area.width);
+        let h = 9.min(area.height);
+        let boxed = Rect { x: area.x + area.width.saturating_sub(w) / 2, y: area.y + area.height.saturating_sub(h) / 2, width: w, height: h };
+        f.render_widget(ratatui::widgets::Clear, boxed);
+        let lines = vec![
+            Line::from(Span::styled("engine offline", theme::bold(theme::RED))).alignment(Alignment::Center),
+            Line::from(Span::styled(e.url.clone(), theme::dim())).alignment(Alignment::Center),
+            Line::from(""),
+            Line::from(Span::styled("waiting for it to answer (set SYSTEMA_ENGINE_URL to change)", theme::accent(theme::YELLOW))).alignment(Alignment::Center),
+            Line::from(Span::styled("1 switches to the swarm node", theme::dim())).alignment(Alignment::Center),
+        ];
+        f.render_widget(Paragraph::new(lines).block(panel("ENGINE", Line::from(""), theme::PINK)), boxed);
+        return;
+    }
+    let cols = Layout::horizontal([Constraint::Length(38), Constraint::Min(30)]).split(area);
+    let left = Layout::vertical([Constraint::Percentage(55), Constraint::Min(5)]).split(cols[0]);
+
+    // Sessions.
+    let sf = e.focus == Focus::Sessions;
+    let items: Vec<ListItem> = e
+        .sessions
+        .iter()
+        .map(|s| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:>3} ", s.messages), theme::dim()),
+                Span::styled(crate::app::truncate(&s.title, 20), theme::fg()),
+                Span::styled(format!(" {}", ago(s.updated)), theme::dim()),
+            ]))
+        })
+        .collect();
+    let mut st = ListState::default();
+    st.select(if e.sessions.is_empty() { None } else { Some(e.sel_session) });
+    let block = panel("SESSIONS", Line::from(Span::styled(format!("{} ", e.sessions.len()), theme::dim())), if sf { theme::PINK } else { theme::PURPLE });
+    f.render_stateful_widget(
+        List::new(items).block(block).highlight_style(Style::default().fg(theme::BG).bg(if sf { theme::PINK } else { theme::DIM }).add_modifier(Modifier::BOLD)),
+        left[0],
+        &mut st,
+    );
+
+    // Workers.
+    let wf = e.focus == Focus::Workers;
+    let items: Vec<ListItem> = e
+        .workers
+        .iter()
+        .map(|w| {
+            let c = if w.status == "connected" { theme::GREEN } else { theme::RED };
+            ListItem::new(Line::from(vec![
+                Span::styled("● ", theme::accent(c)),
+                Span::styled(format!("{:<20}", crate::app::truncate(&w.name, 20)), theme::fg()),
+                Span::styled(format!(" {:>3}ƒ", w.functions), theme::dim()),
+                Span::styled(if w.active > 0 { format!(" ▶{}", w.active) } else { String::new() }, theme::accent(theme::YELLOW)),
+            ]))
+        })
+        .collect();
+    let mut st = ListState::default();
+    st.select(if e.workers.is_empty() { None } else { Some(e.sel_worker) });
+    let block = panel("WORKERS", Line::from(Span::styled(format!("{} ", e.workers.len()), theme::dim())), if wf { theme::CYAN } else { theme::BLUE });
+    f.render_stateful_widget(
+        List::new(items).block(block).highlight_style(Style::default().fg(theme::BG).bg(if wf { theme::CYAN } else { theme::DIM }).add_modifier(Modifier::BOLD)),
+        left[1],
+        &mut st,
+    );
+
+    // Transcript, or the last `:` call's result.
+    let (title, body, color) = match &e.result {
+        Some((func, text)) => (format!("CALL {func}"), text.lines().map(|l| Line::from(Span::styled(l.to_string(), theme::fg()))).collect::<Vec<_>>(), theme::YELLOW),
+        None => {
+            let title = e.selected_session().map(|s| crate::app::truncate(&s.title, 40)).unwrap_or_else(|| "no session".into());
+            let width = cols[1].width.saturating_sub(4) as usize;
+            let mut lines: Vec<Line> = Vec::new();
+            for m in &e.messages {
+                let (tag, c) = match m.role.as_str() {
+                    "user" => ("you", theme::CYAN),
+                    "assistant" => ("agent", theme::PINK),
+                    "notice" => ("sys", theme::YELLOW),
+                    other => (if other == "function_result" { "fn" } else { other }, theme::DIM),
+                };
+                lines.push(Line::from(vec![Span::styled("▌", theme::accent(c)), Span::styled(format!(" {tag}"), theme::bold(c))]));
+                for l in textwrap(&m.text, width, 400) {
+                    lines.push(Line::from(Span::styled(format!("  {l}"), if tag == "fn" { theme::dim() } else { theme::fg() })));
+                }
+                lines.push(Line::from(""));
+            }
+            if lines.is_empty() {
+                lines.push(Line::from(Span::styled("  no messages — press i to chat, N for a new session", theme::dim())));
+            }
+            (title, lines, theme::PINK)
+        }
+    };
+    let h = cols[1].height.saturating_sub(2) as usize;
+    let total = body.len();
+    let max_off = total.saturating_sub(h);
+    // A call result reads from the top; a transcript sticks to the bottom (newest) and scrolls up.
+    let off = if e.result.is_some() { (e.result_off as usize).min(max_off) } else { max_off.saturating_sub((e.scroll as usize).min(max_off)) };
+    let visible: Vec<Line> = body.into_iter().skip(off).take(h).collect();
+    let sub = if e.scroll > 0 { Line::from(Span::styled(format!("↑{} ", e.scroll), theme::accent(theme::YELLOW))) } else { Line::from(Span::styled("live ", theme::dim())) };
+    f.render_widget(Paragraph::new(visible).block(panel(&title, sub, color)), cols[1]);
 }

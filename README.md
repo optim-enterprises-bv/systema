@@ -101,6 +101,15 @@ Nodes behind NAT then set `bootstrap` and `relays` to `/ip4/<public-ip>/tcp/4001
 where the NATs allow it — validate across two real NATs with `scripts/holepunch-cross-nat.sh`
 ([runbook](docs/CROSS-NAT.md)).
 
+## The cockpit (TUI)
+
+`systema` with no arguments opens the cockpit in a terminal (`sa` does the same). It has two tabs, switched with `1` and `2`:
+
+- **ENGINE** (the default): your Systema engine (`ws://127.0.0.1:49134`, or `SYSTEMA_ENGINE_URL`). Sessions and workers on the left, the selected session's transcript on the right. `i` chats in the selected session, `N` starts a new one, `:` calls any function (`engine::functions::info {"function_id":"cron::on-tick"}`) and shows the result, `PgUp`/`PgDn` scroll. It polls every two seconds and never blocks the screen; if the engine is down it says so and reconnects by itself.
+- **SWARM**: the agent node (`systema node`): agents, trust approvals, peers, a live event log. `n` starts a node when none is running.
+
+`SYSTEMA_TAB=swarm` opens on the swarm tab. The look is "midnight Tokyo": neon on near-black, a Tokyo clock, and matrix rain while nothing is happening. Chat from the cockpit is a plain chat turn (no tools); use the console or `systema ask` for tool use.
+
 ## Documentation
 
 - **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** — the full reference: every tool, CLI command and
