@@ -20,6 +20,12 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     header(f, rows[0], app);
 
+    if app.tab == Tab::Dash {
+        crate::dash::draw(f, rows[1], app);
+        hotbar(f, rows[2], app);
+        return;
+    }
+
     if app.tab == Tab::Engine {
         engine_view(f, rows[1], app);
         if app.input.is_some() {
@@ -76,13 +82,13 @@ fn header(f: &mut Frame, area: Rect, app: &App) {
     left.extend(theme::gradient_spans(" SYSTEMA ", app.frame));
     left.push(Span::styled("▐", theme::accent(theme::PINK)));
     left.push(Span::raw(" "));
-    for (key, name, tab) in [("1", "SWARM", Tab::Swarm), ("2", "ENGINE", Tab::Engine)] {
+    for (key, name, tab) in [("1", "SWARM", Tab::Swarm), ("2", "ENGINE", Tab::Engine), ("3", "DASH", Tab::Dash)] {
         let on = app.tab == tab;
         let style = if on { Style::default().fg(theme::BG).bg(theme::PINK).add_modifier(Modifier::BOLD) } else { theme::dim() };
         left.push(Span::styled(format!(" {key} {name} "), style));
         left.push(Span::raw(" "));
     }
-    if app.tab == Tab::Engine {
+    if app.tab != Tab::Swarm {
         let e = &app.engine;
         let on = e.online;
         left.push(Span::styled(if on { " ● " } else { " ○ " }, theme::accent(if on { theme::GREEN } else { theme::RED })));
@@ -287,6 +293,16 @@ fn events_panel(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn hotbar(f: &mut Frame, area: Rect, app: &App) {
+    if app.tab == Tab::Dash {
+        let mut spans = Vec::new();
+        spans.extend(theme::keycap("r", "refresh", true));
+        spans.extend(theme::keycap("1", "swarm", false));
+        spans.extend(theme::keycap("2", "engine", false));
+        spans.extend(theme::keycap("Tab", "next tab", false));
+        spans.extend(theme::keycap("q", "quit", true));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
     if app.tab == Tab::Engine {
         let mut spans = Vec::new();
         spans.extend(theme::keycap("j/k", "move", true));
@@ -375,7 +391,7 @@ fn textwrap(text: &str, width: usize, max: usize) -> Vec<String> {
     out
 }
 
-fn ago(ms: u64) -> String {
+pub fn ago(ms: u64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     let s = now.saturating_sub(ms) / 1000;
     match s {
