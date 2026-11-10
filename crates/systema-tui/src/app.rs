@@ -115,6 +115,7 @@ pub enum InputKind {
 pub enum Tab {
     Swarm,
     Engine,
+    Dash,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,6 +134,7 @@ pub struct EngineView {
     pub msg_session: Option<String>,
     pub sel_session: usize,
     pub sel_worker: usize,
+    online_once: bool,
     pub focus: Focus,
     /// The last `:` call: (function, pretty result), shown over the transcript until Esc.
     pub result: Option<(String, String)>,
@@ -142,7 +144,31 @@ pub struct EngineView {
     pub result_off: u16,
     /// A session to select as soon as it shows up in the list (just created by a send).
     pub want: Option<String>,
+    /// Dashboard: total in-flight calls per poll, newest last (a sparkline).
+    pub load: std::collections::VecDeque<u64>,
+    /// Dashboard: what changed between polls (workers coming and going, new sessions), newest last.
+    pub changes: std::collections::VecDeque<Change>,
+    /// Session ids seen so far; `None` until the first list so start-up does not log everything as new.
+    seen_sessions: Option<std::collections::HashSet<String>>,
 }
+
+/// One dashboard log line: when, what kind, text.
+#[derive(Clone)]
+pub struct Change {
+    pub at: Instant,
+    pub kind: ChangeKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Up,
+    Down,
+    Info,
+}
+
+pub const MAX_LOAD: usize = 240;
+pub const MAX_CHANGES: usize = 200;
 
 impl EngineView {
     pub fn new(url: String) -> Self {
@@ -155,12 +181,63 @@ impl EngineView {
             msg_session: None,
             sel_session: 0,
             sel_worker: 0,
+            online_once: false,
             focus: Focus::Sessions,
             result: None,
             scroll: 0,
             result_off: 0,
             want: None,
+            load: Default::default(),
+            changes: Default::default(),
+            seen_sessions: None,
         }
+    }
+
+    fn note(&mut self, kind: ChangeKind, text: String) {
+        self.changes.push_back(Change { at: Instant::now(), kind, text });
+        while self.changes.len() > MAX_CHANGES {
+            self.changes.pop_front();
+        }
+    }
+
+    /// Take a worker snapshot: log arrivals, departures and status flips against the previous one,
+    /// and record the in-flight call count for the load sparkline.
+    pub fn ingest_workers(&mut self, new: Vec<crate::engine::WorkerRow>) {
+        if !self.workers.is_empty() || self.online_once {
+            for w in &new {
+                match self.workers.iter().find(|o| o.name == w.name) {
+                    None => self.note(ChangeKind::Up, format!("{} {} joined", w.name, w.version)),
+                    Some(o) if o.status != w.status => {
+                        let kind = if w.status == "connected" { ChangeKind::Up } else { ChangeKind::Down };
+                        self.note(kind, format!("{} {} -> {}", w.name, o.status, w.status));
+                    }
+                    Some(o) if o.version != w.version => self.note(ChangeKind::Info, format!("{} {} -> {}", w.name, o.version, w.version)),
+                    _ => {}
+                }
+            }
+            let gone: Vec<String> = self.workers.iter().filter(|o| !new.iter().any(|w| w.name == o.name)).map(|o| o.name.clone()).collect();
+            for name in gone {
+                self.note(ChangeKind::Down, format!("{name} left"));
+            }
+        }
+        self.online_once = true;
+        self.load.push_back(new.iter().map(|w| w.active).sum());
+        while self.load.len() > MAX_LOAD {
+            self.load.pop_front();
+        }
+        self.workers = new;
+    }
+
+    /// Take a session snapshot: log sessions that were not there before.
+    pub fn note_sessions(&mut self) {
+        let ids: std::collections::HashSet<String> = self.sessions.iter().map(|s| s.id.clone()).collect();
+        if let Some(seen) = &self.seen_sessions {
+            let fresh: Vec<String> = self.sessions.iter().filter(|s| !seen.contains(&s.id)).map(|s| truncate(&s.title, 40)).collect();
+            for title in fresh {
+                self.note(ChangeKind::Info, format!("new session: {title}"));
+            }
+        }
+        self.seen_sessions = Some(ids);
     }
 
     pub fn selected_session(&self) -> Option<&crate::engine::SessionRow> {

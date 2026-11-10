@@ -3,6 +3,7 @@
 //! `ask`/`steer`/`cancel`/`resolve` as commands.
 
 mod app;
+mod dash;
 mod engine;
 mod theme;
 mod ui;
@@ -210,7 +211,7 @@ async fn handle_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
         return;
     }
 
-    // Tabs: 1 = swarm node, 2 = engine.
+    // Tabs: 1 = swarm node, 2 = engine, 3 = dashboard.
     match k.code {
         KeyCode::Char('1') => {
             app.tab = Tab::Swarm;
@@ -220,11 +221,28 @@ async fn handle_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
             app.tab = Tab::Engine;
             return;
         }
+        KeyCode::Char('3') => {
+            app.tab = Tab::Dash;
+            return;
+        }
         KeyCode::Tab => {
-            app.tab = if app.tab == Tab::Swarm { Tab::Engine } else { Tab::Swarm };
+            app.tab = match app.tab {
+                Tab::Swarm => Tab::Engine,
+                Tab::Engine => Tab::Dash,
+                Tab::Dash => Tab::Swarm,
+            };
             return;
         }
         _ => {}
+    }
+    if app.tab == Tab::Dash {
+        match k.code {
+            KeyCode::Char('q') => app.should_quit = true,
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => app.should_quit = true,
+            KeyCode::Char('r') => engine_cmd(app, engine::Cmd::Refresh),
+            _ => {}
+        }
+        return;
     }
     if app.tab == Tab::Engine && engine_key(app, k) {
         return;
@@ -374,13 +392,14 @@ fn apply_engine(app: &mut App, msg: engine::Msg) {
     match msg {
         engine::Msg::Online(on) => e.online = on,
         engine::Msg::Workers(w) => {
-            e.workers = w;
+            e.ingest_workers(w);
             e.sel_worker = e.sel_worker.min(e.workers.len().saturating_sub(1));
         }
         engine::Msg::Sessions(s) => {
             // Keep the same session selected when the list reorders; honour a just-opened one.
             let keep = e.want.take().or_else(|| e.msg_session.clone());
             e.sessions = s;
+            e.note_sessions();
             if let Some(id) = keep {
                 if let Some(i) = e.sessions.iter().position(|x| x.id == id) {
                     e.sel_session = i;
