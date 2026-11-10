@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Systema Ring</title>
+<style>
+  :root{--bg:#0a0b14;--fg:#b9c2e8;--dim:#4a5280;--cyan:#00e5ff;--green:#39ff88;--yellow:#ffc857;--red:#ff4d6d;--pink:#ff2e97;--purple:#b48cff;--border:#1f2240}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:fixed;pointer-events:none}
+  #top{top:0;left:0;right:0;padding:14px 18px;display:flex;gap:28px;align-items:baseline;flex-wrap:wrap;
+    background:linear-gradient(var(--bg),transparent)}
+  #top h1{margin:0;font-size:20px;letter-spacing:.08em;font-weight:700}
+  #top h1 b{color:var(--pink)}
+  .stat small{display:block;color:var(--dim);font-size:10px;letter-spacing:.14em}
+  .stat span{font-size:22px;font-weight:700}
+  #log{left:18px;bottom:14px;width:min(420px,calc(100% - 36px));max-height:32vh;overflow:hidden;
+    padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:rgba(10,11,20,.72);backdrop-filter:blur(4px)}
+  #log h2,#sess h2{margin:0 0 6px;font-size:10px;letter-spacing:.14em;color:var(--dim);font-weight:700}
+  #log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #sess{right:18px;bottom:14px;width:min(340px,calc(100% - 36px));max-height:32vh;overflow:hidden;
+    padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:rgba(10,11,20,.72);backdrop-filter:blur(4px)}
+  #sess div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tip{position:fixed;display:none;pointer-events:none;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
+    background:rgba(10,11,20,.94);z-index:5;min-width:170px}
+  #tip b{color:var(--cyan)}
+  #msg{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;pointer-events:none}
+  #msg div{padding:18px 24px;border:1px solid var(--border);border-radius:12px;background:rgba(10,11,20,.9)}
+  .up{color:var(--green)}.down{color:var(--red)}.info{color:var(--cyan)}.dim{color:var(--dim)}
+  @media (max-width:640px){#sess{display:none}#top{gap:16px}.stat span{font-size:18px}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="top">
+  <h1>SYSTEMA <b>/</b> RING</h1>
+  <div class="stat"><small>WORKERS</small><span id="s-total">–</span></div>
+  <div class="stat"><small>CONNECTED</small><span id="s-conn" class="up">–</span></div>
+  <div class="stat"><small>FUNCTIONS</small><span id="s-fn">–</span></div>
+  <div class="stat"><small>IN FLIGHT</small><span id="s-act">–</span></div>
+  <div class="stat"><small>SESSIONS</small><span id="s-sess">–</span></div>
+  <div class="stat"><small>ENGINE</small><span id="s-eng" class="dim">…</span></div>
+</div>
+<div class="hud" id="log"><h2>LOG</h2><div class="dim">waiting for the first poll…</div></div>
+<div class="hud" id="sess"><h2>SESSIONS</h2></div>
+<div id="tip"></div>
+<div id="msg"><div><b class="down">engine unreachable</b><br><span class="dim" id="msg-url"></span><br><span class="dim">retrying every 2 s. Use ?engine=ws://host:port to point elsewhere.</span></div></div>
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const ENGINE = params.get("engine") || "ws://127.0.0.1:49134";
+const POLL_MS = 2000;
+const COL = {up:"#39ff88", avail:"#00e5ff", down:"#ff4d6d", other:"#ffc857", pink:"#ff2e97", purple:"#b48cff", dim:"#4a5280"};
+
+const state = { workers: [], sessions: [], online: false, log: [], seen: null, seenSess: null, t0: performance.now(), particles: [] };
+const $ = id => document.getElementById(id);
+const statusColor = s => s === "connected" ? COL.up : s === "available" ? COL.avail : s === "disconnected" ? COL.down : COL.other;
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+// ---- engine wire: one websocket, one request at a time, reconnects on failure ----
+let ws = null, pending = new Map();
+function connect() {
+  return new Promise((resolve, reject) => {
+    const s = new WebSocket(ENGINE);
+    const timer = setTimeout(() => { try { s.close(); } catch (_) {} reject(new Error("connect timed out")); }, 2500);
+    s.onopen = () => { clearTimeout(timer); ws = s; resolve(); };
+    s.onerror = () => { clearTimeout(timer); reject(new Error("socket error")); };
+    s.onclose = () => { if (ws === s) ws = null; for (const [, p] of pending) p.reject(new Error("closed")); pending.clear(); };
+    s.onmessage = ev => {
+      let v; try { v = JSON.parse(ev.data); } catch (_) { return; }
+      if (v.type !== "invocationresult") return;
+      const p = pending.get(v.invocation_id); if (!p) return;
+      pending.delete(v.invocation_id);
+      if (v.error) p.reject(new Error((v.error.code ? v.error.code + ": " : "") + (v.error.message || "error")));
+      else p.resolve(v.result);
+    };
+  });
+}
+async function call(fn, data) {
+  if (!ws || ws.readyState !== 1) await connect();
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { pending.delete(id); reject(new Error("timed out")); }, 6000);
+    pending.set(id, { resolve: v => { clearTimeout(t); resolve(v); }, reject: e => { clearTimeout(t); reject(e); } });
+    ws.send(JSON.stringify({ type: "invokefunction", invocation_id: id, function_id: fn, data: data || {} }));
+  });
+}
+
+function note(kind, text) {
+  state.log.unshift({ at: Date.now(), kind, text });
+  state.log.length = Math.min(state.log.length, 60);
+  renderLog();
+}
+function renderLog() {
+  const el = $("log");
+  const rows = state.log.slice(0, 12).map(l => {
+    const s = Math.round((Date.now() - l.at) / 1000);
+    const mark = l.kind === "up" ? "▲" : l.kind === "down" ? "▼" : "●";
+    return `<div><span class="dim">${String(s).padStart(4)}s</span> <span class="${l.kind}">${mark}</span> ${esc(l.text)}</div>`;
+  }).join("");
+  el.innerHTML = "<h2>LOG</h2>" + (rows || '<div class="dim">nothing has changed since this page opened</div>');
+}
+
+function ingest(workers) {
+  const names = new Map(workers.map(w => [w.name, w]));
+  if (state.seen) {
+    for (const w of workers) {
+      const o = state.seen.get(w.name);
+      if (!o) note("up", `${w.name} ${w.version || ""} joined`);
+      else if (o.status !== w.status) note(w.status === "connected" ? "up" : "down", `${w.name} ${o.status} → ${w.status}`);
+      else if (o.version !== w.version) note("info", `${w.name} ${o.version} → ${w.version}`);
+    }
+    for (const [n] of state.seen) if (!names.has(n)) note("down", `${n} left`);
+  }
+  state.seen = names;
+  state.workers = workers.slice().sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function poll() {
+  try {
+    const w = await call("engine::workers::list", {});
+    state.online = true;
+    ingest(w.workers || []);
+    try {
+      const s = await call("session::list", { limit: 40 });
+      const list = (s.sessions || []).map(x => ({
+        id: x.session_id, messages: x.message_count || 0,
+        title: x.title || x.description || (x.metadata && (x.metadata.title || x.metadata.description)) || "(untitled)",
+        updated: x.updated_at || x.created_at || 0
+      }));
+      if (state.seenSess) for (const x of list) if (!state.seenSess.has(x.id)) note("info", "new session: " + x.title.slice(0, 40));
+      state.seenSess = new Set(list.map(x => x.id));
+      state.sessions = list;
+    } catch (_) {}
+  } catch (e) {
+    state.online = false;
+    ws = null;
+  }
+  hud();
+  setTimeout(poll, POLL_MS);
+}
+
+function hud() {
+  const W = state.workers;
+  $("s-total").textContent = state.online || W.length ? W.length : "–";
+  $("s-conn").textContent = W.filter(w => w.status === "connected").length;
+  $("s-fn").textContent = W.reduce((a, w) => a + (w.function_count || 0), 0);
+  const act = W.reduce((a, w) => a + (w.active_invocations || 0), 0);
+  $("s-act").textContent = act;
+  $("s-sess").textContent = state.sessions.length;
+  const e = $("s-eng"); e.textContent = state.online ? "up" : "offline"; e.className = state.online ? "up" : "down";
+  $("msg").style.display = state.online || W.length ? "none" : "flex";
+  $("msg-url").textContent = ENGINE;
+  const now = Date.now();
+  $("sess").innerHTML = "<h2>SESSIONS</h2>" + state.sessions.slice(0, 9).map(s => {
+    const live = now - s.updated < 60000;
+    return `<div><span class="${live ? "up" : "dim"}">${live ? "●" : "·"}</span> <span class="dim">${String(s.messages).padStart(3)}</span> ${esc(s.title.slice(0, 34))}</div>`;
+  }).join("");
+  renderLog();
+}
+
+// ---- the ring ----
+const cv = $("c"), g = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1, hover = null, mouse = { x: -1, y: -1 };
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener("resize", resize); resize();
+addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
+const TILT = 0.4;       // ring flattening: 1 = seen from above, 0 = edge on
+let tiles = [];         // projected this frame, for hit testing
+
+function geometry() {
+  const cx = W / 2, cy = H * 0.5 + 10;
+  const R = Math.min(W * 0.42, H * 0.62 / TILT * 0.62, 560);
+  return { cx, cy, R };
+}
+
+function stars(t) {
+  g.fillStyle = "rgba(185,194,232,.5)";
+  for (let i = 0; i < 70; i++) {
+    const x = (Math.sin(i * 91.7) * 0.5 + 0.5) * W, y = (Math.sin(i * 37.3 + 1) * 0.5 + 0.5) * H;
+    g.globalAlpha = 0.15 + 0.25 * (0.5 + 0.5 * Math.sin(t * 0.0006 + i));
+    g.fillRect(x, y, 1.4, 1.4);
+  }
+  g.globalAlpha = 1;
+}
+
+function frame(now) {
+  const t = now - state.t0;
+  g.clearRect(0, 0, W, H);
+  stars(t);
+  const { cx, cy, R } = geometry();
+  const rot = t * 0.00008;
+
+  // floor rings
+  g.strokeStyle = "rgba(77,141,255,.14)"; g.lineWidth = 1;
+  for (const k of [0.38, 0.7, 1.0, 1.16]) { g.beginPath(); g.ellipse(cx, cy, R * k, R * k * TILT, 0, 0, Math.PI * 2); g.stroke(); }
+
+  // core
+  const pulse = 0.5 + 0.5 * Math.sin(t * 0.002);
+  const cr = Math.max(26, R * 0.11) * (1 + 0.06 * pulse);
+  let grd = g.createRadialGradient(cx, cy, 0, cx, cy, cr * 3.2);
+  grd.addColorStop(0, state.online ? "rgba(160,120,255,.95)" : "rgba(255,77,109,.8)");
+  grd.addColorStop(0.35, state.online ? "rgba(255,46,151,.35)" : "rgba(255,77,109,.2)");
+  grd.addColorStop(1, "rgba(10,11,20,0)");
+  g.fillStyle = grd; g.beginPath(); g.arc(cx, cy, cr * 3.2, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = state.online ? "rgba(255,46,151,.9)" : "rgba(255,77,109,.9)"; g.lineWidth = 1.5;
+  g.beginPath(); g.ellipse(cx, cy, cr, cr * 0.9, t * 0.0004, 0, Math.PI * 2); g.stroke();
+  g.fillStyle = "#fff"; g.beginPath(); g.arc(cx, cy, 3, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "rgba(185,194,232,.9)"; g.font = "600 11px ui-monospace,monospace"; g.textAlign = "left";
+  g.fillText("★ engine", cx + cr + 8, cy - 4);
+
+  // place workers on the ring
+  const n = Math.max(1, state.workers.length);
+  const maxFn = Math.max(1, ...state.workers.map(w => w.function_count || 0));
+  const items = state.workers.map((w, i) => {
+    const a = rot * 2 * Math.PI * 6 + (i / n) * Math.PI * 2;
+    const depth = Math.sin(a);                         // -1 back … +1 front
+    const sc = 0.78 + 0.22 * depth;
+    return { w, a, depth, sc, x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R * TILT };
+  }).sort((p, q) => p.depth - q.depth);
+
+  // links from the core to workers that are busy, with moving packets
+  for (const it of items) {
+    const act = it.w.active_invocations || 0;
+    if (!act) continue;
+    g.strokeStyle = "rgba(255,200,87,.25)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(cx, cy); g.lineTo(it.x, it.y); g.stroke();
+    for (let k = 0; k < Math.min(act, 4); k++) {
+      const u = ((t * 0.0007 + k / Math.min(act, 4) + it.a) % 1);
+      g.fillStyle = "rgba(255,200,87,.95)";
+      g.beginPath(); g.arc(cx + (it.x - cx) * u, cy + (it.y - cy) * u, 2.2 * it.sc, 0, Math.PI * 2); g.fill();
+    }
+  }
+
+  // tiles
+  tiles = [];
+  const tw = Math.max(14, Math.min(46, (2 * Math.PI * R) / n * 0.62));
+  for (const it of items) {
+    const w = it.w, col = statusColor(w.status), act = w.active_invocations || 0;
+    const th = (10 + 34 * Math.sqrt((w.function_count || 1) / maxFn)) * it.sc;
+    const wd = tw * it.sc;
+    const x = it.x - wd / 2, y = it.y - th;           // stands on the ring
+    g.save();
+    g.globalAlpha = 0.45 + 0.55 * (0.5 + 0.5 * it.depth);
+    g.shadowColor = col; g.shadowBlur = act ? 16 : 6;
+    g.fillStyle = col + "33"; g.strokeStyle = col; g.lineWidth = act ? 2 : 1.2;
+    g.beginPath(); g.roundRect(x, y, wd, th, 3); g.fill(); g.stroke();
+    g.shadowBlur = 0;
+    g.fillStyle = col; g.globalAlpha *= 0.55;
+    for (let r = 4; r < th - 3; r += 5) g.fillRect(x + 3, y + r, wd - 6, 1.2);   // "file" lines
+    g.restore();
+    tiles.push({ w, x, y, wd, th });
+    // Labels: busy workers always, the rest only on the near arc and only if there is room.
+    const label = w.name.length > 14 ? w.name.slice(0, 13) + "…" : w.name;
+    const room = (2 * Math.PI * R) / n * it.sc;
+    if (act || (it.depth > 0.25 && room > label.length * 5.2)) {
+      g.fillStyle = act ? "#ffc857" : "rgba(185,194,232,.85)";
+      g.font = `${Math.round(10 * it.sc + 1)}px ui-monospace,monospace`; g.textAlign = "center";
+      g.fillText(label, it.x, it.y + 13 * it.sc);
+    }
+  }
+
+  // sessions orbit the core; live ones glow
+  const nowMs = Date.now();
+  state.sessions.slice(0, 40).forEach((s, i) => {
+    const live = nowMs - s.updated < 60000;
+    const a = t * (live ? 0.0006 : 0.00025) + i * 2.399;
+    const rr = R * (0.2 + 0.22 * ((i * 0.37) % 1));
+    const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr * TILT;
+    g.fillStyle = live ? "rgba(57,255,136,.95)" : "rgba(180,140,255,.45)";
+    g.shadowColor = live ? "#39ff88" : "transparent"; g.shadowBlur = live ? 10 : 0;
+    g.beginPath(); g.arc(x, y, live ? 3.4 : 2.2, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
+  });
+
+  // hover tooltip
+  hover = null;
+  for (let i = tiles.length - 1; i >= 0; i--) {
+    const p = tiles[i];
+    if (mouse.x >= p.x - 4 && mouse.x <= p.x + p.wd + 4 && mouse.y >= p.y - 4 && mouse.y <= p.y + p.th + 4) { hover = p.w; break; }
+  }
+  const tip = $("tip");
+  if (hover) {
+    tip.style.display = "block";
+    tip.style.left = Math.min(W - 220, mouse.x + 14) + "px"; tip.style.top = Math.min(H - 110, mouse.y + 14) + "px";
+    tip.innerHTML = `<b>${esc(hover.name)}</b> <span class="dim">${esc(hover.version || "")}</span><br>` +
+      `status <span style="color:${statusColor(hover.status)}">${esc(hover.status)}</span><br>` +
+      `${hover.function_count || 0} functions · ${hover.active_invocations || 0} in flight<br>` +
+      `<span class="dim">${esc(hover.runtime || "")}${hover.isolation ? " · " + esc(JSON.stringify(hover.isolation)) : ""}</span>`;
+  } else tip.style.display = "none";
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+poll();
+</script>
+</body>
+</html>

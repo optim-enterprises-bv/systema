@@ -37,6 +37,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 const INDEX_HTML: &str = include_str!("index.html");
+/// The engine ring view: a standalone page that talks to the engine's websocket from the browser.
+const RING_HTML: &str = include_str!("ring.html");
 
 #[derive(Parser, Debug)]
 #[command(name = "systema-console", about = "Browser dashboard for a running Systema node")]
@@ -85,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/ring", get(ring))
         .route("/api/status", get(status))
         .route("/api/agents", get(agents))
         .route("/api/peers", get(peers))
@@ -126,6 +129,10 @@ async fn main() -> anyhow::Result<()> {
 
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn ring() -> Html<&'static str> {
+    Html(RING_HTML)
 }
 
 /// Forward one `Control` command to the running node and return its JSON reply.
